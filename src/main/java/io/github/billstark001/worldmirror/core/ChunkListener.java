@@ -263,7 +263,6 @@ public class ChunkListener {
         }
         if (invalidated > 0) {
             WMLogger.debug("Invalidated " + invalidated + " durably exported chunks from cache.");
-            EntityTracker.pruneToMatchCapturedChunks();
             ContainerTracker.evictForChunks(invalidatedByDim);
         }
     }
@@ -361,7 +360,6 @@ public class ChunkListener {
 
         if (evicted > 0) {
             WMLogger.debug("Evicted " + evicted + " stale chunks from cache.");
-            EntityTracker.pruneToMatchCapturedChunks();
             ContainerTracker.evictForChunks(evictedByDim);
         }
     }

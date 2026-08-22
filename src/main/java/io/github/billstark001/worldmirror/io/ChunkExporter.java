@@ -15,8 +15,6 @@ import io.github.billstark001.worldmirror.util.WMLogger;
 import net.fabricmc.api.EnvType;
 import net.fabricmc.api.Environment;
 import net.minecraft.core.BlockPos;
-import net.minecraft.nbt.IntArrayTag;
-import net.minecraft.nbt.ListTag;
 import net.minecraft.nbt.NbtIo;
 import net.minecraft.resources.ResourceKey;
 import net.minecraft.world.level.ChunkPos;
@@ -38,6 +36,7 @@ public class ChunkExporter {
             Map<ResourceKey<Level>, Map<ChunkPos, WriteStamp>> written,
             Map<ResourceKey<Level>, Map<ChunkPos, WriteStamp>> settledWithoutWrite,
             Map<ResourceKey<Level>, Set<ChunkPos>> unreadableChunks,
+            Map<ResourceKey<Level>, Map<ChunkPos, Long>> entityRevisions,
             boolean chunkWritesSuccessful,
             boolean entityWritesSuccessful,
             ExportTimings timings
@@ -79,8 +78,6 @@ public class ChunkExporter {
             long verificationNs
     ) { }
 
-    private record EntityResult(boolean successful, long elapsedNs, long verificationNs) { }
-
     private record Verification(
             boolean regionUsable,
             Set<ChunkPos> verified,
@@ -112,7 +109,7 @@ public class ChunkExporter {
     public static ExportResult exportChunks(
             Path worldFolder,
             ChunkListener.DirtySnapshot snapshot,
-            Map<ResourceKey<Level>, Map<ChunkPos, List<net.minecraft.nbt.CompoundTag>>> entitySnapshot,
+            Map<ResourceKey<Level>, Map<ChunkPos, EntityTracker.ChunkUpdate>> entitySnapshot,
             Map<ResourceKey<Level>, Map<BlockPos, net.minecraft.nbt.CompoundTag>> containerSnapshot,
             ConflictResolver resolver,
             ChunkDatabase db) throws Exception {
@@ -120,32 +117,22 @@ public class ChunkExporter {
         Map<ResourceKey<Level>, Map<ChunkPos, WriteStamp>> allWritten = new HashMap<>();
         Map<ResourceKey<Level>, Map<ChunkPos, WriteStamp>> allSettled = new HashMap<>();
         Map<ResourceKey<Level>, Set<ChunkPos>> allUnreadable = new HashMap<>();
-        boolean entityWritesSuccessful = true;
         boolean chunkWritesSuccessful = true;
         long databaseLookupNs = 0L, materializeNs = 0L, chunkReadNs = 0L;
         long resolveMergeWriteNs = 0L, flushNs = 0L, verificationNs = 0L, entityNs = 0L;
 
-        Set<ResourceKey<Level>> dimensions = new HashSet<>(snapshot.chunks().keySet());
-        dimensions.addAll(entitySnapshot.keySet());
-        for (ResourceKey<Level> dimension : dimensions) {
+        for (ResourceKey<Level> dimension : snapshot.chunks().keySet()) {
             Map<ChunkPos, ChunkListener.CapturedChunk> dimChunks =
                     snapshot.chunks().getOrDefault(dimension, Map.of());
-            Map<ChunkPos, List<net.minecraft.nbt.CompoundTag>> dimEntities =
-                    entitySnapshot.getOrDefault(dimension, Map.of());
 
             Path dimensionDir = dimensionDirForDimension(worldFolder, dimension);
             Path regionDir = dimensionDir.resolve("region");
-            Path entitiesDir = dimensionDir.resolve("entities");
             Files.createDirectories(regionDir);
-            Files.createDirectories(entitiesDir);
 
             DimensionResult dimensionResult = exportDimensionChunks(
-                    regionDir, dimChunks, dimEntities, containerSnapshot, resolver, db,
+                    regionDir, dimChunks, containerSnapshot, resolver, db,
                     dimension, worldFolder, snapshot);
-            EntityResult entityResult = exportDimensionEntities(entitiesDir, dimEntities, dimension);
-            entityWritesSuccessful &= entityResult.successful();
             chunkWritesSuccessful &= dimensionResult.successful();
-            entityNs += entityResult.elapsedNs();
             allWritten.put(dimension, dimensionResult.written());
             allSettled.put(dimension, dimensionResult.settledWithoutWrite());
             allUnreadable.put(dimension, dimensionResult.unreadableChunks());
@@ -154,11 +141,19 @@ public class ChunkExporter {
             chunkReadNs += dimensionResult.chunkReadNs();
             resolveMergeWriteNs += dimensionResult.resolveMergeWriteNs();
             flushNs += dimensionResult.flushNs();
-            verificationNs += dimensionResult.verificationNs() + entityResult.verificationNs();
+            verificationNs += dimensionResult.verificationNs();
 
         }
-        return new ExportResult(allWritten, allSettled, allUnreadable, chunkWritesSuccessful,
-                entityWritesSuccessful,
+        long entityStartedNs = System.nanoTime();
+        Map<ResourceKey<Level>, Map<ChunkPos, Long>> entityRevisions =
+                EntityRegionWriter.write(worldFolder, entitySnapshot);
+        entityNs = System.nanoTime() - entityStartedNs;
+        boolean entityWritesSuccessful = entitySnapshot.entrySet().stream().allMatch(entry -> {
+            Map<ChunkPos, Long> written = entityRevisions.get(entry.getKey());
+            return written != null && written.size() == entry.getValue().size();
+        });
+        return new ExportResult(allWritten, allSettled, allUnreadable, entityRevisions,
+                chunkWritesSuccessful, entityWritesSuccessful,
                 new ExportTimings(toMillis(databaseLookupNs), toMillis(materializeNs),
                         toMillis(chunkReadNs), toMillis(resolveMergeWriteNs),
                         toMillis(flushNs), toMillis(verificationNs), toMillis(entityNs)));
@@ -169,7 +164,6 @@ public class ChunkExporter {
     private static DimensionResult exportDimensionChunks(
             Path regionDir,
             Map<ChunkPos, ChunkListener.CapturedChunk> dimChunks,
-            Map<ChunkPos, List<net.minecraft.nbt.CompoundTag>> dimEntities,
             Map<ResourceKey<Level>, Map<BlockPos, net.minecraft.nbt.CompoundTag>> containerSnapshot,
             ConflictResolver resolver,
             ChunkDatabase db,
@@ -389,111 +383,6 @@ public class ChunkExporter {
 
     public static Path regionDirForDimension(Path worldFolder, ResourceKey<Level> dimension) {
         return dimensionDirForDimension(worldFolder, dimension).resolve("region");
-    }
-
-    private static EntityResult exportDimensionEntities(
-            Path entitiesDir,
-            Map<ChunkPos, List<net.minecraft.nbt.CompoundTag>> dimEntities,
-            ResourceKey<Level> dimension) {
-        if (dimEntities.isEmpty()) return new EntityResult(true, 0L, 0L);
-        long startedNs = System.nanoTime();
-        long verificationNs = 0L;
-        boolean successful = true;
-
-        Map<String, List<Map.Entry<ChunkPos, List<net.minecraft.nbt.CompoundTag>>>> byRegion =
-                new HashMap<>();
-        for (Map.Entry<ChunkPos, List<net.minecraft.nbt.CompoundTag>> entry : dimEntities.entrySet()) {
-            ChunkPos chunkPos = entry.getKey();
-            byRegion.computeIfAbsent(regionKey(chunkPos.getRegionX(), chunkPos.getRegionZ()),
-                    ignored -> new ArrayList<>()).add(entry);
-        }
-
-        for (Map.Entry<String, List<Map.Entry<ChunkPos, List<net.minecraft.nbt.CompoundTag>>>> region
-                : byRegion.entrySet()) {
-            String[] coords = region.getKey().split(",");
-            int regionX = Integer.parseInt(coords[0]);
-            int regionZ = Integer.parseInt(coords[1]);
-            Path entityFile = entitiesDir.resolve(String.format("r.%d.%d.mca", regionX, regionZ));
-            synchronized (McaWriteSupport.lockFor(entityFile)) {
-                long regionStartedNs = System.nanoTime();
-                RegionStorageInfo storageInfo =
-                        new RegionStorageInfo("world_mirror", dimension, "entities");
-                Set<ChunkPos> staged = new HashSet<>();
-                try {
-                    RegionFileIntegrity.Inspection before =
-                            RegionFileIntegrity.inspect(entityFile, regionX, regionZ);
-                    if (!before.usable()) {
-                        successful = false;
-                        WMLogger.warn("Entity region validation failed before write file="
-                                + entityFile + " reason=" + before.failure());
-                        continue;
-                    }
-
-                    try (RegionFile vanillaRegion =
-                                 new RegionFile(storageInfo, entityFile, entitiesDir, false)) {
-                        for (Map.Entry<ChunkPos, List<net.minecraft.nbt.CompoundTag>> entry
-                                : region.getValue()) {
-                            List<net.minecraft.nbt.CompoundTag> entities = entry.getValue();
-                            if (entities == null) continue;
-                            ChunkPos chunkPos = entry.getKey();
-                            try {
-                                net.minecraft.nbt.CompoundTag entityChunkNbt =
-                                        new net.minecraft.nbt.CompoundTag();
-                                entityChunkNbt.putInt("DataVersion",
-                                        net.minecraft.SharedConstants.getCurrentVersion()
-                                                .dataVersion().version());
-                                entityChunkNbt.put("Position", new IntArrayTag(new int[] {
-                                        chunkPos.getMinBlockX() >> 4,
-                                        chunkPos.getMinBlockZ() >> 4
-                                }));
-                                ListTag entityList = new ListTag();
-                                entityList.addAll(entities);
-                                entityChunkNbt.put("Entities", entityList);
-                                try (DataOutputStream output =
-                                             vanillaRegion.getChunkDataOutputStream(chunkPos)) {
-                                    NbtIo.write(entityChunkNbt, output);
-                                }
-                                staged.add(chunkPos);
-                            } catch (Exception e) {
-                                successful = false;
-                                WMLogger.warnRateLimited(
-                                        "entity-process-" + dimension.identifier(),
-                                        30_000L, "Entity chunk processing failed dimension="
-                                                + dimension.identifier() + " chunk=" + chunkPos, e);
-                            }
-                        }
-                        if (!staged.isEmpty()) vanillaRegion.flush();
-                    }
-
-                    if (!staged.isEmpty()) {
-                        Verification verification = verifyWrittenRegion(
-                                storageInfo, entityFile, entitiesDir, regionX, regionZ, staged);
-                        verificationNs += verification.elapsedNs();
-                        Set<ChunkPos> regionUnreadable = new HashSet<>(before.invalidChunks());
-                        regionUnreadable.removeAll(verification.verified());
-                        regionUnreadable.addAll(verification.unreadable());
-                        if (!regionUnreadable.isEmpty()
-                                || verification.verified().size() != staged.size()) {
-                            successful = false;
-                            WMLogger.warn("Entity region durability verification failed file="
-                                    + entityFile + " verified=" + verification.verified().size()
-                                    + " failed=" + regionUnreadable.size());
-                        }
-                    } else if (!before.invalidChunks().isEmpty()) {
-                        successful = false;
-                        WMLogger.warn("Entity region contains unreadable chunks file="
-                                + entityFile + " count=" + before.invalidChunks().size());
-                    }
-                } catch (Exception e) {
-                    successful = false;
-                    WMLogger.warn("Entity region write failed file=" + entityFile, e);
-                } finally {
-                    logSlowRegion(dimension, entityFile, region.getValue().size(), staged.size(),
-                            regionStartedNs, "entity");
-                }
-            }
-        }
-        return new EntityResult(successful, System.nanoTime() - startedNs, verificationNs);
     }
 
     private static long toMillis(long nanos) {

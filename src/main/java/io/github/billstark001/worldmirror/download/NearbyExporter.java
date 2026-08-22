@@ -3,6 +3,7 @@ package io.github.billstark001.worldmirror.download;
 import io.github.billstark001.worldmirror.conflict.OverwriteResolver;
 import io.github.billstark001.worldmirror.core.ChunkListener;
 import io.github.billstark001.worldmirror.core.ContainerTracker;
+import io.github.billstark001.worldmirror.core.EntityTracker;
 import io.github.billstark001.worldmirror.io.ChunkExporter;
 import io.github.billstark001.worldmirror.io.ChunkSerializer;
 import io.github.billstark001.worldmirror.io.MirrorWorldgenAssets;
@@ -28,7 +29,6 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.sql.SQLException;
 import java.util.HashMap;
-import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
@@ -103,7 +103,7 @@ public final class NearbyExporter {
 
         ChunkListener.DirtySnapshot snapshot = ChunkListener.snapshotOf(
                 Map.of(dimension, nearbyChunks));
-        Map<ResourceKey<Level>, Map<ChunkPos, List<CompoundTag>>> entitySnapshot = Map.of();
+        Map<ResourceKey<Level>, Map<ChunkPos, EntityTracker.ChunkUpdate>> entitySnapshot = Map.of();
         Map<ResourceKey<Level>, Map<BlockPos, CompoundTag>> containerSnapshot =
                 ContainerTracker.snapshotSavedData();
 
@@ -128,7 +128,7 @@ public final class NearbyExporter {
     private static void writeSave(Minecraft client, String worldName, Path output,
                                   int spawnX, int spawnY, int spawnZ,
                                   ChunkListener.DirtySnapshot snapshot,
-                                  Map<ResourceKey<Level>, Map<ChunkPos, List<CompoundTag>>> entities,
+                                  Map<ResourceKey<Level>, Map<ChunkPos, EntityTracker.ChunkUpdate>> entities,
                                   Map<ResourceKey<Level>, Map<BlockPos, CompoundTag>> containers,
                                   Lineage lineage) {
         try {

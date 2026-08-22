@@ -27,7 +27,6 @@ import java.lang.management.ThreadMXBean;
 import java.nio.file.Path;
 import java.sql.SQLException;
 import java.util.HashMap;
-import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.LinkedBlockingQueue;
@@ -57,7 +56,16 @@ final class DownloadExportCoordinator {
 
     record Request(Trigger trigger, boolean shouldNotify, boolean preCaptureAlreadyDone,
                    String preferredSourceId, String preferredSourceType,
-                   Map<ResourceKey<Level>, Map<BlockPos, CompoundTag>> containerSnapshot) { }
+                   Map<ResourceKey<Level>, Map<BlockPos, CompoundTag>> containerSnapshot,
+                   Map<ResourceKey<Level>, Map<ChunkPos, EntityTracker.ChunkUpdate>> entitySnapshot,
+                   ChunkListener.DirtySnapshot terrainSnapshot) {
+        Request(Trigger trigger, boolean shouldNotify, boolean preCaptureAlreadyDone,
+                String preferredSourceId, String preferredSourceType,
+                Map<ResourceKey<Level>, Map<BlockPos, CompoundTag>> containerSnapshot) {
+            this(trigger, shouldNotify, preCaptureAlreadyDone, preferredSourceId,
+                    preferredSourceType, containerSnapshot, null, null);
+        }
+    }
 
     record Metrics(long lastExportMillis, int lastWritten, int lastSettled,
                    int lastUnreadable, long failures) { }
@@ -109,7 +117,8 @@ final class DownloadExportCoordinator {
     }
 
     boolean hasEntityWork() {
-        return entityRevision.get() > durableEntityRevision.get();
+        return entityRevision.get() > durableEntityRevision.get()
+                || EntityTracker.hasDirtyUpdates();
     }
 
     Metrics metrics() {
@@ -138,7 +147,10 @@ final class DownloadExportCoordinator {
 
     void clearDeferred() {
         synchronized (requestLock) {
-            pending = null;
+            if (pending != null && pending.entitySnapshot() == null
+                    && pending.terrainSnapshot() == null) {
+                pending = null;
+            }
         }
     }
 
@@ -148,7 +160,9 @@ final class DownloadExportCoordinator {
                 automaticSuppressed.incrementAndGet();
                 return false;
             }
-            defer(withContainerSnapshot(request));
+            Request deferred = request.preCaptureAlreadyDone()
+                    ? withPreparedSnapshots(client, request) : request;
+            defer(withContainerSnapshot(deferred));
             WMLogger.debug("Export already in progress; queued trigger="
                     + request.trigger() + " for one deferred pass.");
             return false;
@@ -170,21 +184,22 @@ final class DownloadExportCoordinator {
             if (queued > 0 || captureQueue.isCaptureInProgress()) {
                 defer(new Request(request.trigger(), request.shouldNotify(), true,
                         request.preferredSourceId(), request.preferredSourceType(),
-                        request.containerSnapshot()));
+                        request.containerSnapshot(), request.entitySnapshot(),
+                        request.terrainSnapshot()));
                 return false;
             }
         }
 
-        ChunkListener.DirtySnapshot snapshot = ChunkListener.snapshotDirtyState();
-        EntityTracker.pruneToMatchCapturedChunks();
+        ChunkListener.DirtySnapshot snapshot = request.terrainSnapshot() != null
+                ? request.terrainSnapshot() : ChunkListener.snapshotDirtyState();
         long entitySnapshotRevision = entityRevision.get();
         boolean captureEntities = entitySnapshotRevision > durableEntityRevision.get();
-        if (captureEntities && client.level != null) {
+        if (request.entitySnapshot() == null && captureEntities && client.level != null) {
             EntityTracker.captureEntitiesForWorld(client.level);
-            EntityTracker.pruneToMatchCapturedChunks();
         }
-        Map<ResourceKey<Level>, Map<ChunkPos, List<CompoundTag>>> entitySnapshot =
-                captureEntities ? EntityTracker.snapshot() : Map.of();
+        Map<ResourceKey<Level>, Map<ChunkPos, EntityTracker.ChunkUpdate>> entitySnapshot =
+                request.entitySnapshot() != null
+                        ? request.entitySnapshot() : EntityTracker.snapshot();
         Map<ResourceKey<Level>, Map<BlockPos, CompoundTag>> containerSnapshot =
                 request.containerSnapshot() != null
                         ? request.containerSnapshot() : ContainerTracker.snapshotSavedData();
@@ -234,7 +249,7 @@ final class DownloadExportCoordinator {
     }
 
     private void runWorker(Request request, ChunkListener.DirtySnapshot snapshot,
-                           Map<ResourceKey<Level>, Map<ChunkPos, List<CompoundTag>>> entitySnapshot,
+                           Map<ResourceKey<Level>, Map<ChunkPos, EntityTracker.ChunkUpdate>> entitySnapshot,
                            Map<ResourceKey<Level>, Map<BlockPos, CompoundTag>> containerSnapshot,
                            long entitySnapshotRevision, int totalChunks,
                            String sourceId, String sourceType, Path worldFolder,
@@ -319,11 +334,9 @@ final class DownloadExportCoordinator {
             boolean invalidate = ModConfig.get().cache.invalidateAfterExport;
             ChunkListener.acknowledge(result.settledRevisions(), invalidate);
             ChunkListener.acknowledge(durableWritten, invalidate);
+            EntityTracker.acknowledge(result.entityRevisions());
             if (result.entityWritesSuccessful()) {
                 durableEntityRevision.accumulateAndGet(entitySnapshotRevision, Math::max);
-                if (entityRevision.get() == entitySnapshotRevision) {
-                    EntityTracker.discardDurableEmptyMarkers(entitySnapshot);
-                }
             }
 
             boolean successful = result.chunkWritesSuccessful()
@@ -380,7 +393,11 @@ final class DownloadExportCoordinator {
                     choosePreferred(request.preferredSourceId(), pending.preferredSourceId()),
                     choosePreferred(request.preferredSourceType(), pending.preferredSourceType()),
                     request.containerSnapshot() != null
-                            ? request.containerSnapshot() : pending.containerSnapshot());
+                            ? request.containerSnapshot() : pending.containerSnapshot(),
+                    request.entitySnapshot() != null
+                            ? request.entitySnapshot() : pending.entitySnapshot(),
+                    request.terrainSnapshot() != null
+                            ? request.terrainSnapshot() : pending.terrainSnapshot());
         }
     }
 
@@ -388,7 +405,23 @@ final class DownloadExportCoordinator {
         if (request.containerSnapshot() != null) return request;
         return new Request(request.trigger(), request.shouldNotify(), request.preCaptureAlreadyDone(),
                 request.preferredSourceId(), request.preferredSourceType(),
-                ContainerTracker.snapshotSavedData());
+                ContainerTracker.snapshotSavedData(), request.entitySnapshot(),
+                request.terrainSnapshot());
+    }
+
+    /** Captures stop-time state before a running export can outlive the client world. */
+    private static Request withPreparedSnapshots(Minecraft client, Request request) {
+        Map<ResourceKey<Level>, Map<ChunkPos, EntityTracker.ChunkUpdate>> entities =
+                request.entitySnapshot();
+        if (entities == null) {
+            if (client.level != null) EntityTracker.captureEntitiesForWorld(client.level);
+            entities = EntityTracker.snapshot();
+        }
+        ChunkListener.DirtySnapshot terrain = request.terrainSnapshot() != null
+                ? request.terrainSnapshot() : ChunkListener.snapshotDirtyState();
+        return new Request(request.trigger(), request.shouldNotify(), true,
+                request.preferredSourceId(), request.preferredSourceType(),
+                request.containerSnapshot(), entities, terrain);
     }
 
     private static ConflictResolver buildResolver(String sourceId) {

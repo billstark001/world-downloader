@@ -3,6 +3,7 @@
   "package": "io.github.billstark001.worldmirror.mixin",
   "compatibilityLevel": "${mixinJava}",
   "client": [
+    "ClientEntityLifecycleMixin",
     "ChunkDataMixin",
     "ContainerMixin",
     "WorldOpenFlowsMixin"

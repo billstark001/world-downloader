@@ -199,7 +199,8 @@ public final class DownloadManager {
     private static void exportNowReady(Minecraft client) {
         boolean canPreCapture = ModConfig.get().lifecycle.captureNearbyBeforeExport
                 && client.level != null && client.player != null;
-        if (ChunkListener.isEmpty() && !canPreCapture) {
+        if (ChunkListener.isEmpty() && !exportCoordinator.hasEntityWork()
+                && !EntityTracker.hasDirtyUpdates() && !canPreCapture) {
             Component msg = Component.translatable("msg.worldmirror.noChunks");
             WMPlayerMessages.sendSystemMessage(client.player, msg);
             WMLogger.debug("Manual export ignored because no chunks are cached.");
@@ -557,6 +558,7 @@ public final class DownloadManager {
         resetDiagnosticSession();
         diagnosticSessionActive = ModConfig.get().performance.diagnosticPerformanceLogging;
         recordPerformanceTimings = diagnosticSessionActive;
+        EntityTracker.resetObservationEpochs();
         exportCoordinator.markEntitiesDirty();
         long nowMs = System.currentTimeMillis();
         activePipeline.reset(nowMs);

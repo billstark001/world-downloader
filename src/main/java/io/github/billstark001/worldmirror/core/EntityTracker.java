@@ -1,196 +1,205 @@
 package io.github.billstark001.worldmirror.core;
 
-import java.util.ArrayList;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
-
-import io.github.billstark001.worldmirror.io.NbtWriteView;
 import io.github.billstark001.worldmirror.util.WMLogger;
 import net.fabricmc.api.EnvType;
 import net.fabricmc.api.Environment;
+import net.minecraft.client.Minecraft;
 import net.minecraft.client.multiplayer.ClientLevel;
-import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.resources.ResourceKey;
+import net.minecraft.util.ProblemReporter;
 import net.minecraft.world.entity.Entity;
+import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.level.Level;
-import net.minecraft.world.level.chunk.LevelChunk;
 import net.minecraft.world.level.chunk.status.ChunkStatus;
-import net.minecraft.world.level.storage.ValueOutput;
-import net.minecraft.world.phys.Vec3;
+import net.minecraft.world.level.storage.TagValueOutput;
 
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.LinkedHashMap;
+import java.util.Map;
+import java.util.Set;
+import java.util.UUID;
+
+/** Tracks client-known entity snapshots independently from the terrain cache. */
 @Environment(EnvType.CLIENT)
-public class EntityTracker {
+public final class EntityTracker {
+    private static final int COMPLETE_OBSERVATION_RADIUS_CHUNKS = 2;
+    private static final long LOAD_GRACE_MS = 750L;
 
-    // dimension → (chunkPos → entity list)
-    private static final ConcurrentHashMap<ResourceKey<Level>, Map<ChunkPos, List<CompoundTag>>>
-            dimChunkEntities = new ConcurrentHashMap<>();
+    public enum Observation {
+        PARTIAL,
+        COMPLETE
+    }
 
-    /**
-     * Captures all non-player entities in the given world and stores them under
-     * that world's dimension key.  Must be called on the game thread.
-     * <p>
-     * Each entity is serialized via {@link Entity#saveWithoutId(ValueOutput)}, which
-     * covers every entity type — including paintings (motive / facing / attachment
-     * position), item frames (held item, rotation), armour stands (pose, equipment,
-     * flags), dropped items, mobs, animals, and more.  The entity type identifier
-     * is added as the {@code id} key after the client-visible data is captured so
-     * the resulting NBT is compatible with Minecraft's region-file format.
-     */
-    public static void captureEntitiesForWorld(ClientLevel world) {
+    /** A top-level entity and every UUID owned by its recursively saved passenger tree. */
+    public record EntityRecord(UUID rootUuid, Set<UUID> containedUuids, CompoundTag nbt) {
+        public EntityRecord {
+            containedUuids = Set.copyOf(containedUuids);
+            nbt = nbt.copy();
+        }
+
+        public EntityRecord copy() {
+            return new EntityRecord(rootUuid, containedUuids, nbt);
+        }
+
+        @Override
+        public CompoundTag nbt() {
+            return nbt.copy();
+        }
+    }
+
+    /** Immutable, versioned write intent for one entity chunk. */
+    public record ChunkUpdate(
+            long revision,
+            Observation observation,
+            Map<UUID, EntityRecord> upserts,
+            Set<UUID> tombstones) {
+        public ChunkUpdate {
+            Map<UUID, EntityRecord> copied = new LinkedHashMap<>();
+            upserts.forEach((uuid, record) -> copied.put(uuid, record.copy()));
+            upserts = Map.copyOf(copied);
+            tombstones = Set.copyOf(tombstones);
+        }
+
+    }
+
+    private static final Map<ResourceKey<Level>, EntitySnapshotStore> dimensions = new HashMap<>();
+    private static final Map<ResourceKey<Level>, Map<ChunkPos, Long>> loadedSinceByDimension = new HashMap<>();
+
+    private EntityTracker() { }
+
+    public static synchronized void onChunkLoaded(ClientLevel world, ChunkPos pos) {
+        if (world == null || pos == null) return;
+        loadedSinceByDimension.computeIfAbsent(world.dimension(), ignored -> new HashMap<>())
+                .put(pos, System.currentTimeMillis());
+    }
+
+    /** Ends the observation epoch without deleting saved or pending entity data. */
+    public static synchronized void onChunkUnloaded(ClientLevel world, ChunkPos pos) {
+        if (world == null || pos == null) return;
+        Map<ChunkPos, Long> loaded = loadedSinceByDimension.get(world.dimension());
+        if (loaded != null) loaded.remove(pos);
+    }
+
+    /** Captures the complete client entity store on the game thread. */
+    public static synchronized void captureEntitiesForWorld(ClientLevel world) {
         if (world == null) {
-            WMLogger.debug("Entity capture skipped: client world is unavailable");
+            WMLogger.debug("Entity capture skipped because the client world is unavailable");
             return;
         }
 
         ResourceKey<Level> dimension = world.dimension();
-        Map<ChunkPos, ChunkListener.CapturedChunk> capturedChunks =
-                ChunkListener.getDimension(dimension);
-
-        Map<ChunkPos, List<CompoundTag>> dimEntities = new ConcurrentHashMap<>();
+        EntitySnapshotStore store = dimensions.computeIfAbsent(dimension, ignored -> new EntitySnapshotStore());
+        Map<ChunkPos, Map<UUID, EntityRecord>> observed = new HashMap<>();
         int total = 0;
 
         for (Entity entity : world.entitiesForRendering()) {
-            if (entity == null || entity instanceof net.minecraft.world.entity.player.Player) continue;
-
-            Vec3 pos = entity.position();
-            int cx = (int) Math.floor(pos.x) >> 4;
-            int cz = (int) Math.floor(pos.z) >> 4;
-            ChunkPos chunkPos = new ChunkPos(cx, cz);
-
-            if (capturedChunks.containsKey(chunkPos)) {
-                try {
-                    CompoundTag nbt = serializeEntity(entity);
-                    if (nbt != null) {
-                        dimEntities.computeIfAbsent(chunkPos, k -> new ArrayList<>()).add(nbt);
-                        total++;
-                    }
-                } catch (Exception e) {
-                    WMLogger.warnRateLimited("entity-serialize", 30_000L,
-                            "Entity serialization failed near chunk=" + pos, e);
-                }
-            }
+            if (entity == null || entity instanceof Player || entity.isPassenger()) continue;
+            EntityRecord record = serializeEntity(world, entity);
+            if (record == null) continue;
+            observed.computeIfAbsent(entity.chunkPosition(), ignored -> new LinkedHashMap<>())
+                    .put(record.rootUuid(), record);
+            total++;
         }
 
-        Map<ChunkPos, List<CompoundTag>> previous = dimChunkEntities.get(dimension);
-        if (previous != null) {
-            for (ChunkPos previousPos : previous.keySet()) {
-                boolean stillLoaded = world.getChunk(
-                        previousPos.getMinBlockX() >> 4,
-                        previousPos.getMinBlockZ() >> 4,
-                        ChunkStatus.FULL, false) instanceof LevelChunk;
-                if (stillLoaded && capturedChunks.containsKey(previousPos)) {
-                    dimEntities.putIfAbsent(previousPos, new ArrayList<>());
-                }
-            }
-        }
-
-        dimChunkEntities.put(dimension, dimEntities);
-        WMLogger.debug("Captured " + total + " entities for [" + dimension.identifier() + "]");
+        long now = System.currentTimeMillis();
+        Set<ChunkPos> completeChunks = collectCompletelyObservedChunks(world, now);
+        store.capture(observed, completeChunks);
+        WMLogger.debug("Captured " + total + " root entities and " + completeChunks.size()
+                + " complete entity chunk(s) for [" + dimension.identifier() + "]");
     }
 
-    /**
-     * Returns an immutable snapshot of all entity data, safe to read from any thread.
-     */
-    public static Map<ResourceKey<Level>, Map<ChunkPos, List<CompoundTag>>> snapshot() {
-        Map<ResourceKey<Level>, Map<ChunkPos, List<CompoundTag>>> result = new HashMap<>();
-        for (Map.Entry<ResourceKey<Level>, Map<ChunkPos, List<CompoundTag>>> dimEntry
-                : dimChunkEntities.entrySet()) {
-            Map<ChunkPos, List<CompoundTag>> dimCopy = new HashMap<>();
-            for (Map.Entry<ChunkPos, List<CompoundTag>> chunkEntry : dimEntry.getValue().entrySet()) {
-                dimCopy.put(chunkEntry.getKey(), List.copyOf(chunkEntry.getValue()));
-            }
-            result.put(dimEntry.getKey(), Map.copyOf(dimCopy));
-        }
+    public static synchronized Map<ResourceKey<Level>, Map<ChunkPos, ChunkUpdate>> snapshot() {
+        Map<ResourceKey<Level>, Map<ChunkPos, ChunkUpdate>> result = new HashMap<>();
+        dimensions.forEach((dimension, store) -> {
+            Map<ChunkPos, ChunkUpdate> updates = store.snapshot();
+            if (!updates.isEmpty()) result.put(dimension, updates);
+        });
         return Map.copyOf(result);
     }
 
-    /** Drops one-shot empty markers after their exact entity snapshot is durable. */
-    public static void discardDurableEmptyMarkers(
-            Map<ResourceKey<Level>, Map<ChunkPos, List<CompoundTag>>> durableSnapshot) {
-        for (Map.Entry<ResourceKey<Level>, Map<ChunkPos, List<CompoundTag>>> dimEntry
-                : durableSnapshot.entrySet()) {
-            Map<ChunkPos, List<CompoundTag>> live = dimChunkEntities.get(dimEntry.getKey());
-            if (live == null) continue;
-            for (Map.Entry<ChunkPos, List<CompoundTag>> entry : dimEntry.getValue().entrySet()) {
-                if (entry.getValue().isEmpty()) {
-                    List<CompoundTag> current = live.get(entry.getKey());
-                    if (current != null && current.isEmpty()) {
-                        live.remove(entry.getKey(), current);
-                    }
-                }
-            }
-            if (live.isEmpty()) dimChunkEntities.remove(dimEntry.getKey(), live);
-        }
+    public static synchronized void acknowledge(
+            Map<ResourceKey<Level>, Map<ChunkPos, Long>> writtenRevisions) {
+        writtenRevisions.forEach((dimension, revisions) -> {
+            EntitySnapshotStore store = dimensions.get(dimension);
+            if (store != null) store.acknowledge(revisions);
+        });
     }
 
-    public static void clear() {
+    public static synchronized boolean hasDirtyUpdates() {
+        return dimensions.values().stream().anyMatch(EntitySnapshotStore::hasPending);
+    }
+
+    /** Forces already-loaded chunks to satisfy the load grace period again. */
+    public static synchronized void resetObservationEpochs() {
+        loadedSinceByDimension.clear();
+    }
+
+    public static synchronized void clear() {
         int total = getTotalTrackedEntities();
-        dimChunkEntities.clear();
+        dimensions.clear();
+        loadedSinceByDimension.clear();
         WMLogger.debug("Cleared " + total + " tracked entities");
     }
 
-    public static int getTotalTrackedEntities() {
-        return dimChunkEntities.values().stream()
-                .mapToInt(m -> m.values().stream().mapToInt(List::size).sum())
-                .sum();
+    public static synchronized int getTotalTrackedEntities() {
+        return dimensions.values().stream().mapToInt(EntitySnapshotStore::knownEntityCount).sum();
     }
 
-    public static void pruneToMatchCapturedChunks() {
-        int removedChunks = 0;
-        List<ResourceKey<Level>> emptyDims = new ArrayList<>();
-
-        for (Map.Entry<ResourceKey<Level>, Map<ChunkPos, List<CompoundTag>>> dimEntry
-                : dimChunkEntities.entrySet()) {
-            ResourceKey<Level> dimension = dimEntry.getKey();
-            Map<ChunkPos, ChunkListener.CapturedChunk> liveChunks =
-                    ChunkListener.getDimension(dimension);
-            Map<ChunkPos, List<CompoundTag>> entitiesByChunk = dimEntry.getValue();
-
-            java.util.Iterator<ChunkPos> it = entitiesByChunk.keySet().iterator();
-            while (it.hasNext()) {
-                ChunkPos pos = it.next();
-                if (!liveChunks.containsKey(pos)) {
-                    it.remove();
-                    removedChunks++;
-                }
-            }
-            if (entitiesByChunk.isEmpty()) {
-                emptyDims.add(dimension);
-            }
-        }
-
-        for (ResourceKey<Level> dim : emptyDims) {
-            dimChunkEntities.remove(dim);
-        }
-        if (removedChunks > 0) {
-            WMLogger.debug("Pruned entity cache for " + removedChunks + " chunk(s).");
-        }
-    }
-
-    // ── Entity serialisation ──────────────────────────────────────────────────
-
-    /**
-     * Serializes {@code entity} to NBT for storage in the entities region file.
-     * <p>
-     * Minecraft writes entity data through {@code WriteView}; the local
-     * {@link NbtWriteView} adapter captures that output as a {@link CompoundTag}.
-     */
-    private static CompoundTag serializeEntity(Entity entity) {
+    private static EntityRecord serializeEntity(ClientLevel world, Entity entity) {
         try {
-            NbtWriteView view = new NbtWriteView();
-            entity.saveWithoutId(view);
-            CompoundTag nbt = view.getCompound();
-            nbt.putString("id", BuiltInRegistries.ENTITY_TYPE.getKey(entity.getType()).toString());
-            return nbt;
+            ProblemReporter.Collector problems = new ProblemReporter.Collector();
+            TagValueOutput output = TagValueOutput.createWithContext(problems, world.registryAccess());
+            if (!entity.save(output)) return null;
+
+            CompoundTag nbt = output.buildResult();
+            if (!nbt.contains("id") || !nbt.contains("UUID")) {
+                WMLogger.warnRateLimited("entity-identity", 30_000L,
+                        "Vanilla entity serialization omitted id or UUID type=" + entity.getType());
+                return null;
+            }
+            if (!problems.isEmpty()) {
+                WMLogger.warnRateLimited("entity-codec", 30_000L,
+                        "Entity serialization reported codec problems type=" + entity.getType()
+                                + " report=" + problems.getReport());
+            }
+
+            Set<UUID> contained = new HashSet<>();
+            entity.getSelfAndPassengers().forEach(passenger -> contained.add(passenger.getUUID()));
+            return new EntityRecord(entity.getUUID(), contained, nbt);
         } catch (Exception e) {
-            WMLogger.warnRateLimited("entity-single-serialize", 30_000L,
+            WMLogger.warnRateLimited("entity-serialize", 30_000L,
                     "Entity serialization failed type=" + entity.getType(), e);
             return null;
         }
     }
-}
 
+    private static Set<ChunkPos> collectCompletelyObservedChunks(ClientLevel world, long now) {
+        Minecraft minecraft = Minecraft.getInstance();
+        if (minecraft.player == null || minecraft.player.level() != world) return Set.of();
+
+        int centerX = minecraft.player.getBlockX() >> 4;
+        int centerZ = minecraft.player.getBlockZ() >> 4;
+        Map<ChunkPos, Long> loaded = loadedSinceByDimension.computeIfAbsent(
+                world.dimension(), ignored -> new HashMap<>());
+        Set<ChunkPos> complete = new HashSet<>();
+
+        for (int x = centerX - COMPLETE_OBSERVATION_RADIUS_CHUNKS;
+                x <= centerX + COMPLETE_OBSERVATION_RADIUS_CHUNKS; x++) {
+            for (int z = centerZ - COMPLETE_OBSERVATION_RADIUS_CHUNKS;
+                    z <= centerZ + COMPLETE_OBSERVATION_RADIUS_CHUNKS; z++) {
+                ChunkPos pos = new ChunkPos(x, z);
+                if (world.getChunkSource().getChunk(x, z, ChunkStatus.FULL, false) == null) {
+                    loaded.remove(pos);
+                    continue;
+                }
+                long since = loaded.computeIfAbsent(pos, ignored -> now);
+                if (now - since >= LOAD_GRACE_MS) complete.add(pos);
+            }
+        }
+        return complete;
+    }
+
+}
