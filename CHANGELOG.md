@@ -5,6 +5,33 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [0.4.0] — 2026-08-23
+
+### Added
+
+- Opt-in `Experimental Adaptive` download pipeline with dirty-backlog and maximum-latency triggers; the hardened `Stable Periodic` pipeline remains the default and mode changes apply only on the next activation.
+- Coalesced event capture for full chunks, block changes, block entities, biomes, lighting, containers, chunk loads, and a final synchronous capture on unload.
+- Configurable main-thread capture budget, bounded capture-hint queue, adaptive high-water mark, and durability-latency controls.
+- Default-off, low-frequency performance diagnostics covering queue pressure, capture/export timing, slow regions, failures, and JVM heap use.
+
+### Changed
+
+- Region output now uses Minecraft's streaming `RegionFile` API and materializes one chunk at a time instead of deep-copying and converting the whole cache through temporary byte arrays.
+- Automatic exports no longer run the nearby 17×17 pre-export scan; the optional scan is reserved for explicit manual export.
+- Entity regions are also streamed one region at a time instead of retaining every parsed entity MCA file for the pass.
+- Updated the README and Modrinth usage instructions to distinguish starting a session, flushing captured data, and selecting a world-list-visible save location.
+
+### Fixed
+
+- Exact monotonic revisions prevent an update arriving during an older write from being acknowledged or invalidated accidentally.
+- Dirty chunks can no longer be evicted before both region flush and SQLite durability-index commit; failed stages remain cached for retry.
+- SQLite records each captured timestamp and refuses to regress a newer durability record.
+- Manual conflicts use streaming region writes and remain dirty for retry if conflict persistence fails.
+- Entity snapshots now include type IDs and write one-shot empty markers for moves/despawns in still-loaded chunks without deleting entities merely because their chunk unloaded.
+- Replaced the unbounded per-region lock cache with fixed lock striping.
+
+---
+
 ## [0.3.0] — 2026-07-29
 
 ### Added

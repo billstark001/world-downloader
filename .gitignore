@@ -32,6 +32,7 @@ bin/
 
 run/
 tmp-*/
+versions/*/logs/
 
 # java
 
