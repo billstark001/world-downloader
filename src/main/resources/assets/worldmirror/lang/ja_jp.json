@@ -26,7 +26,7 @@
   "msg.worldmirror.nearbyNoWorld": "エクスポートできません。ワールドが読み込まれていません。",
   "msg.worldmirror.nearbyNoChunks": "半径 %s 内でチャンクを取得できませんでした。",
   "msg.worldmirror.nearbyDone": "saves/%s にエクスポートしました",
-  "msg.worldmirror.nearbyFailed": "エクスポートに失敗しました：%s",
+  "msg.worldmirror.nearbyFailed": "エクスポートに失敗しました。詳細は latest.log を確認してください。",
 
   "screen.worldmirror.status.title":            "World Mirror ステータス",
   "screen.worldmirror.status.sourceType":       "タイプ",

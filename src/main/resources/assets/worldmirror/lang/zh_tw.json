@@ -26,7 +26,7 @@
   "msg.worldmirror.nearbyNoWorld": "無法匯出：未載入世界。",
   "msg.worldmirror.nearbyNoChunks": "半徑 %s 內未擷取到區塊。",
   "msg.worldmirror.nearbyDone": "已匯出到 saves/%s",
-  "msg.worldmirror.nearbyFailed": "匯出失敗：%s",
+  "msg.worldmirror.nearbyFailed": "匯出失敗。詳情請查看 latest.log。",
 
   "screen.worldmirror.status.title":            "World Mirror 狀態",
   "screen.worldmirror.status.sourceType":       "類型",

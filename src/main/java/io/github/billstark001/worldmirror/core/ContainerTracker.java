@@ -51,7 +51,7 @@ public class ContainerTracker {
         if (hitResult instanceof BlockHitResult blockHit) {
             BlockPos pos = blockHit.getBlockPos();
             openContainers.put(syncId, new OpenContainer(pos, name, new ConcurrentHashMap<>(), 0));
-            WMLogger.debug("Container opened at " + pos + ": " + name.getString());
+            WMLogger.debug("Container opened position=" + pos + " syncId=" + syncId);
         }
     }
 
@@ -156,7 +156,8 @@ public class ContainerTracker {
                     + positions.second() + " with " + firstSlots.size() + "+"
                     + secondSlots.size() + " filled slots");
         } catch (Exception e) {
-            WMLogger.warn("Failed to handle double chest, falling back: " + e.getMessage());
+            WMLogger.warnRateLimited("container-double-chest", 30_000L,
+                    "Double-chest capture failed; falling back to a single container", e);
             handleRegularContainer(container, contents, 54);
         }
     }

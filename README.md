@@ -322,6 +322,9 @@ delete or reset any mirror data already written to disk.
 
 ## Building
 
+Maintainers should read [CONTRIBUTING.md](CONTRIBUTING.md), especially the
+project-wide logging policy and the vendored NBT dependency notes.
+
 ```bash
 ./gradlew buildAll
 ```

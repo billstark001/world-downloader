@@ -121,7 +121,7 @@ public class WorldMetadata {
                     return loaded;
                 }
             } catch (Exception e) {
-                WMLogger.warn("Could not read worldmirror_meta.json, creating fresh: " + e.getMessage());
+                WMLogger.warn("World metadata read failed; creating fresh file=" + metaFile, e);
             }
         }
         return create(sourceId, sourceType, "synchronized");
@@ -145,7 +145,7 @@ public class WorldMetadata {
         try (Reader r = Files.newBufferedReader(metaFile, StandardCharsets.UTF_8)) {
             return Optional.ofNullable(GSON.fromJson(r, WorldMetadata.class));
         } catch (Exception e) {
-            WMLogger.warn("Could not read worldmirror_meta.json: " + e.getMessage());
+            WMLogger.warn("World metadata read failed file=" + metaFile, e);
             return Optional.empty();
         }
     }
@@ -165,7 +165,7 @@ public class WorldMetadata {
                 Files.move(temporaryFile, metadataFile, StandardCopyOption.REPLACE_EXISTING);
             }
         } catch (Exception e) {
-            WMLogger.warn("Failed to save worldmirror_meta.json: " + e.getMessage());
+            WMLogger.warn("World metadata save failed file=" + metadataFile, e);
             try { Files.deleteIfExists(temporaryFile); } catch (Exception ignored) {}
         }
     }

@@ -26,7 +26,7 @@
   "msg.worldmirror.nearbyNoWorld": "Cannot export: no world loaded.",
   "msg.worldmirror.nearbyNoChunks": "No chunks captured in radius %s.",
   "msg.worldmirror.nearbyDone": "Exported to saves/%s",
-  "msg.worldmirror.nearbyFailed": "Export failed: %s",
+  "msg.worldmirror.nearbyFailed": "Export failed. See latest.log for details.",
 
   "screen.worldmirror.status.title":            "World Mirror Status",
   "screen.worldmirror.status.sourceType":       "Type",

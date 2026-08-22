@@ -92,7 +92,8 @@ public final class ChunkStatusCache {
             Set<ChunkPos> conflicts = ConflictManager.listConflicts(key.worldFolder(), key.dimension());
             return new ChunkStatusSnapshot(records, conflicts, VERSION.incrementAndGet());
         } catch (Throwable t) {
-            WMLogger.warn("Chunk status snapshot load failed: " + t.getMessage());
+            WMLogger.warnRateLimited("chunk-status-snapshot", 30_000L,
+                    "Chunk status snapshot load failed", t);
             return ChunkStatusSnapshot.EMPTY;
         }
     }

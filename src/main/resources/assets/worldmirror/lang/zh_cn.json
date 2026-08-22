@@ -26,7 +26,7 @@
   "msg.worldmirror.nearbyNoWorld": "无法导出：未加载世界。",
   "msg.worldmirror.nearbyNoChunks": "半径 %s 内未捕获到区块。",
   "msg.worldmirror.nearbyDone": "已导出到 saves/%s",
-  "msg.worldmirror.nearbyFailed": "导出失败：%s",
+  "msg.worldmirror.nearbyFailed": "导出失败。详情请查看 latest.log。",
 
   "screen.worldmirror.status.title":            "World Mirror 状态",
   "screen.worldmirror.status.sourceType":       "类型",

@@ -216,7 +216,7 @@ public class WorldStructureCreator {
             WMLogger.debug("Nearby-export world created at: " + worldFolderPath.toAbsolutePath());
             return true;
         } catch (Exception e) {
-            WMLogger.warn("createLoadableWorldWithSpawn failed: " + e.getMessage());
+            WMLogger.warn("Nearby export world structure creation failed path=" + worldFolderPath, e);
             return false;
         }
     }
@@ -270,7 +270,7 @@ public class WorldStructureCreator {
             }
             return true;
         } catch (Exception e) {
-            WMLogger.warn("Failed to create loadable world: " + e.getMessage());
+            WMLogger.warn("Mirror world structure update failed path=" + worldFolder, e);
             return false;
         }
     }

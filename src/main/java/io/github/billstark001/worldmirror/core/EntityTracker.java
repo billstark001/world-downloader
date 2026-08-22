@@ -42,7 +42,7 @@ public class EntityTracker {
      */
     public static void captureEntitiesForWorld(ClientLevel world) {
         if (world == null) {
-            WMLogger.warn("ClientLevel is null, cannot capture entities.");
+            WMLogger.debug("Entity capture skipped: client world is unavailable");
             return;
         }
 
@@ -70,7 +70,7 @@ public class EntityTracker {
                     }
                 } catch (Exception e) {
                     WMLogger.warnRateLimited("entity-serialize", 30_000L,
-                            "Failed to serialize an entity near " + pos + ": " + e.getMessage());
+                            "Entity serialization failed near chunk=" + pos, e);
                 }
             }
         }
@@ -188,7 +188,7 @@ public class EntityTracker {
             return nbt;
         } catch (Exception e) {
             WMLogger.warnRateLimited("entity-single-serialize", 30_000L,
-                    "Failed to serialize entity type " + entity.getType() + ": " + e.getMessage());
+                    "Entity serialization failed type=" + entity.getType(), e);
             return null;
         }
     }

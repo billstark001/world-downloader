@@ -39,7 +39,8 @@ public abstract class ChunkDataMixin {
 
         ClientLevel world = this.getLevel();
         if (world == null) {
-            WMLogger.warn("Client world is null during chunk data processing.");
+            WMLogger.warnRateLimited("chunk-packet-no-world", 30_000L,
+                    "Chunk packet ignored because the client world is unavailable");
             return;
         }
 
@@ -138,7 +139,8 @@ public abstract class ChunkDataMixin {
                 DownloadManager.queueLightUpdateCapture(world, pos);
             }
         } catch (Exception e) {
-            WMLogger.warn("Failed to capture applied light update for " + pos + ": " + e.getMessage());
+            WMLogger.warnRateLimited("light-update-capture", 30_000L,
+                    "Applied light update capture failed chunk=" + pos, e);
         }
     }
 }

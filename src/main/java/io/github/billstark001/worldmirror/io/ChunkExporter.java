@@ -242,9 +242,9 @@ public class ChunkExporter {
                         } catch (Exception e) {
                             successful = false;
                             WMLogger.warnRateLimited("chunk-process-" + dimension.identifier(),
-                                    30_000L, "Chunk processing failed in ["
-                                            + dimension.identifier() + "] at " + chunkPos
-                                            + "; it remains queued for retry: " + e.getMessage());
+                                    30_000L, "Chunk processing failed dimension="
+                                            + dimension.identifier() + " chunk=" + chunkPos
+                                            + "; retained for retry", e);
                         }
                     }
                     if (!staged.isEmpty()) {
@@ -255,9 +255,8 @@ public class ChunkExporter {
                     }
                 } catch (Exception e) {
                     successful = false;
-                    WMLogger.warn("Failed to write region " + regionFile.getFileName()
-                            + "; keeping " + staged.size() + " chunk(s) cached for retry: "
-                            + e.getMessage());
+                    WMLogger.warn("Region write failed file=" + regionFile
+                            + " retainedChunks=" + staged.size(), e);
                 } finally {
                     logSlowRegion(dimension, regionFile, dirty.size(), staged.size(),
                             regionStartedNs, "chunk");
@@ -343,16 +342,14 @@ public class ChunkExporter {
                         } catch (Exception e) {
                             successful = false;
                             WMLogger.warnRateLimited("entity-process-" + dimension.identifier(),
-                                    30_000L, "Entity-chunk processing failed in ["
-                                            + dimension.identifier() + "] at " + chunkPos
-                                            + ": " + e.getMessage());
+                                    30_000L, "Entity chunk processing failed dimension="
+                                            + dimension.identifier() + " chunk=" + chunkPos, e);
                         }
                     }
                     if (staged > 0) vanillaRegion.flush();
                 } catch (Exception e) {
                     successful = false;
-                    WMLogger.warn("Failed to write entities region " + entityFile.getFileName()
-                            + ": " + e.getMessage());
+                    WMLogger.warn("Entity region write failed file=" + entityFile, e);
                 } finally {
                     logSlowRegion(dimension, entityFile, region.getValue().size(), staged,
                             regionStartedNs, "entity");

@@ -31,7 +31,8 @@ bin/
 # fabric
 
 run/
-tmp-*/
+tmp_*
+tmp-*
 versions/*/logs/
 
 # java

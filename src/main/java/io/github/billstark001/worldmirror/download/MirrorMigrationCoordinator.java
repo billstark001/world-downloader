@@ -83,7 +83,7 @@ public final class MirrorMigrationCoordinator {
                         : LegacyVoidChunkCleanup.Plan.empty();
             } catch (Exception e) {
                 WMLogger.warn("Failed to scan legacy void chunks in " + normalized, e);
-                return Result.failure("legacy_void_scan_failed:" + e.getMessage());
+                return Result.failure("legacy_void_scan_failed");
             }
 
             Path backup;
@@ -92,7 +92,8 @@ public final class MirrorMigrationCoordinator {
                 backup = backupTouchedFiles(normalized, voidCleanup);
                 progress.update(Phase.BACKING_UP, 1, 1);
             } catch (IOException e) {
-                return Result.failure("backup_failed:" + e.getMessage());
+                WMLogger.warn("Mirror migration backup failed world=" + normalized, e);
+                return Result.failure("backup_failed");
             }
 
             progress.update(Phase.WRITING_WORLD_DATA, 0, 1);
@@ -112,7 +113,7 @@ public final class MirrorMigrationCoordinator {
                                 Phase.REMOVING_VOID_CHUNKS, completed, total));
             } catch (Exception e) {
                 WMLogger.warn("Failed to clean legacy void chunks in " + normalized, e);
-                return Result.failure("legacy_void_cleanup_failed:" + e.getMessage());
+                return Result.failure("legacy_void_cleanup_failed");
             }
 
             // Commit the schema marker only after all mutable world files were

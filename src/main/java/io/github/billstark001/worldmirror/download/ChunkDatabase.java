@@ -178,8 +178,7 @@ public class ChunkDatabase implements Closeable {
             }
         } catch (SQLException e) {
             WMLogger.warnRateLimited("db-dirty-check", 30_000L,
-                    "Chunk durability lookup failed; allowing writes until recovery: "
-                            + e.getMessage());
+                    "Chunk durability lookup failed; allowing writes until recovery", e);
             return false; // fail-open: allow update on error
         }
     }
@@ -218,7 +217,8 @@ public class ChunkDatabase implements Closeable {
             conn.commit();
             return true;
         } catch (SQLException e) {
-            WMLogger.warn("ChunkDatabase.recordUpdates error: " + e.getMessage());
+            WMLogger.warn("Chunk durability commit failed dimension=" + dimension
+                    + " updates=" + timestamps.size(), e);
             try { conn.rollback(); } catch (SQLException ignored) {}
             return false;
         } finally {
@@ -270,7 +270,7 @@ public class ChunkDatabase implements Closeable {
             conn.commit();
             WMLogger.debug("Migrated " + migrated + " chunk timestamps from JSON to SQLite.");
         } catch (SQLException e) {
-            WMLogger.warn("ChunkDatabase migration failed: " + e.getMessage());
+            WMLogger.warn("Legacy chunk timestamp migration failed", e);
             try { conn.rollback(); } catch (SQLException ignored) {}
         } finally {
             try { conn.setAutoCommit(true); } catch (SQLException ignored) {}
@@ -284,7 +284,7 @@ public class ChunkDatabase implements Closeable {
                 conn.close();
             }
         } catch (SQLException e) {
-            WMLogger.warn("ChunkDatabase.close error: " + e.getMessage());
+            WMLogger.warn("Chunk database close failed", e);
         }
     }
 
@@ -323,7 +323,8 @@ public class ChunkDatabase implements Closeable {
                 }
             }
         } catch (SQLException e) {
-            WMLogger.warn("ChunkDatabase.queryAll error: " + e.getMessage());
+            WMLogger.warnRateLimited("db-query-all", 30_000L,
+                    "Chunk database query failed dimension=" + dimension, e);
         }
         return result;
     }
@@ -351,7 +352,8 @@ public class ChunkDatabase implements Closeable {
             ChunkDatabase db = new ChunkDatabase(conn, sourceId);
             return db.queryAll(dimension);
         } catch (SQLException e) {
-            WMLogger.warn("ChunkDatabase.queryAllReadOnly error: " + e.getMessage());
+            WMLogger.warnRateLimited("db-query-read-only", 30_000L,
+                    "Read-only chunk database query failed dimension=" + dimension, e);
             return List.of();
         }
     }
@@ -393,7 +395,7 @@ public class ChunkDatabase implements Closeable {
                 System.setProperty("org.sqlite.tmpdir", nativeDir.toAbsolutePath().toString());
                 WMLogger.debug("SQLite native temp dir: " + nativeDir.toAbsolutePath());
             } catch (Exception e) {
-                WMLogger.warn("Could not configure SQLite native temp dir: " + e.getMessage());
+                WMLogger.warn("SQLite native temp directory setup failed path=" + nativeDir, e);
             }
         }
         sqliteNativeDirectoryConfigured = true;
@@ -420,8 +422,8 @@ public class ChunkDatabase implements Closeable {
             }
         } catch (SQLException e) {
             WMLogger.warnRateLimited("db-priority", 30_000L,
-                    "Chunk-source priority lookup failed; using fallback priority: "
-                            + e.getMessage());
+                    "Chunk-source priority lookup failed; using fallback priority source="
+                            + updateSource, e);
         }
         return Integer.MAX_VALUE;
     }

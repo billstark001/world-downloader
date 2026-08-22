@@ -191,8 +191,8 @@ public final class DownloadManager {
             }
         } catch (Exception e) {
             WMLogger.warnRateLimited("capture-unload", 30_000L,
-                    "Final capture before unload failed at " + chunk.getPos()
-                            + "; cached data may be stale: " + e.getMessage());
+                    "Final capture before unload failed chunk=" + chunk.getPos()
+                            + "; cached data may be stale", e);
         }
     }
 
@@ -444,21 +444,11 @@ public final class DownloadManager {
 
         currentActive.set(false);
         clearPendingCaptureState();
-        if (!desired) {
-            finalizeCaptureOnStop(client, eventName);
-        }
+        finalizeCaptureOnStop(client, eventName);
 
-        Component msg = Component.translatable(
-                desired ? "msg.worldmirror.downloadStart"
-                       : "msg.worldmirror.downloadStop");
+        Component msg = Component.translatable("msg.worldmirror.downloadStop");
         WMLogger.sendOverlayMessage(client.player, msg);
-        String transitionMessage = "Download deactivated"
-                + " by lifecycle event: " + eventName;
-        if ("dimension-change".equals(eventName)) {
-            WMLogger.debug(transitionMessage);
-        } else {
-            WMLogger.debug(transitionMessage);
-        }
+        WMLogger.debug("Download deactivated lifecycleEvent=" + eventName);
     }
 
     // ── Output path ───────────────────────────────────────────────────────────
@@ -756,8 +746,8 @@ public final class DownloadManager {
                     captured++;
                 } catch (Exception e) {
                     WMLogger.warnRateLimited("capture-stop-" + reason, 30_000L,
-                            "Stop-time capture failed at " + wc.getPos()
-                                    + " (" + reason + "): " + e.getMessage());
+                            "Stop-time capture failed chunk=" + wc.getPos()
+                                    + " reason=" + reason, e);
                 }
             }
         }
@@ -886,7 +876,7 @@ public final class DownloadManager {
             worldFolder = getOutputPathForSource(finalSourceId);
             Files.createDirectories(worldFolder);
         } catch (Exception e) {
-            WMLogger.warn("Failed to prepare output directory: " + e.getMessage());
+            WMLogger.warn("Export output directory preparation failed source=" + finalSourceId, e);
             return;
         }
 
@@ -938,7 +928,8 @@ public final class DownloadManager {
                 try {
                     db = ChunkDatabase.open(finalWorldFolder, finalSourceId);
                 } catch (SQLException e) {
-                    WMLogger.warn("Could not open chunk database, export aborted: " + e.getMessage());
+                    WMLogger.warn("Chunk database open failed; export aborted world="
+                            + finalWorldFolder, e);
                     notifyExportFailure(notify);
                     return;
                 }
@@ -1020,7 +1011,7 @@ public final class DownloadManager {
                 }
             } catch (Exception e) {
                 exportFailures.incrementAndGet();
-                WMLogger.warn("Export failed: " + e.getMessage(), e);
+                WMLogger.warn("Export pass failed world=" + finalWorldFolder, e);
                 notifyExportFailure(notify);
             } finally {
                 lastExportMillis = (System.nanoTime() - exportStartedNs) / 1_000_000L;
@@ -1107,8 +1098,8 @@ public final class DownloadManager {
                 captured++;
             } catch (Exception e) {
                 WMLogger.warnRateLimited("capture-incremental-" + request.reason(), 30_000L,
-                        "Incremental capture failed at " + wc.getPos()
-                                + " (" + request.reason() + "): " + e.getMessage());
+                        "Incremental capture failed chunk=" + wc.getPos()
+                                + " reason=" + request.reason(), e);
             }
         }
 
@@ -1354,8 +1345,7 @@ public final class DownloadManager {
                             new ChunkListener.CapturedChunk(nbt, System.currentTimeMillis(), 0L));
                 } catch (Exception e) {
                     WMLogger.warnRateLimited("nearby-capture", 30_000L,
-                            "Nearby-export capture failed at " + wc.getPos()
-                                    + ": " + e.getMessage());
+                            "Nearby export capture failed chunk=" + wc.getPos(), e);
                 }
             }
         }
@@ -1437,9 +1427,9 @@ public final class DownloadManager {
                         Component.translatable("msg.worldmirror.nearbyDone", finalOut.getFileName())
                                 .withStyle(ChatFormatting.GREEN)));
             } catch (Exception e) {
-                WMLogger.warn("exportNearbyToNewSave failed: " + e.getMessage());
+                WMLogger.warn("Nearby export failed output=" + finalOut, e);
                 client.execute(() -> WMLogger.sendSystemMessage(client.player,
-                        Component.translatable("msg.worldmirror.nearbyFailed", e.getMessage())
+                        Component.translatable("msg.worldmirror.nearbyFailed")
                                 .withStyle(ChatFormatting.RED)));
             }
         }, "WM-NearbyExport");

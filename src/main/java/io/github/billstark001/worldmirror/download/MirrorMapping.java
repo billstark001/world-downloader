@@ -96,7 +96,9 @@ public class MirrorMapping {
         Path configDir = configDir();
         try {
             Files.createDirectories(configDir);
-        } catch (Exception ignored) {}
+        } catch (Exception e) {
+            WMLogger.warn("Mirror mapping directory creation failed path=" + configDir, e);
+        }
 
         Path file = configDir.resolve("mirrors.json");
         if (file.toFile().exists()) {
@@ -110,7 +112,7 @@ public class MirrorMapping {
                     return m;
                 }
             } catch (Exception e) {
-                WMLogger.warn("Could not load mirrors.json: " + e.getMessage());
+                WMLogger.warn("Mirror mapping load failed file=" + file, e);
             }
         }
         return new MirrorMapping();
@@ -119,13 +121,14 @@ public class MirrorMapping {
     /** Persists the current mapping to disk. */
     public synchronized void save() {
         Path configDir = configDir();
+        Path file = configDir.resolve("mirrors.json");
         try {
             Files.createDirectories(configDir);
-            try (Writer w = new FileWriter(configDir.resolve("mirrors.json").toFile())) {
+            try (Writer w = new FileWriter(file.toFile())) {
                 GSON.toJson(this, w);
             }
         } catch (Exception e) {
-            WMLogger.warn("Could not save mirrors.json: " + e.getMessage());
+            WMLogger.warn("Mirror mapping save failed file=" + file, e);
         }
     }
 

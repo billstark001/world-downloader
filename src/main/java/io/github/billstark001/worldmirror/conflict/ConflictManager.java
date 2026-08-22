@@ -101,8 +101,8 @@ public final class ConflictManager {
             }
             return true;
         } catch (Exception e) {
-            WMLogger.warn("ConflictManager.saveConflict failed for " + pos
-                    + " [" + dimension.identifier() + "]: " + e.getMessage());
+            WMLogger.warn("Conflict save failed chunk=" + pos
+                    + " dimension=" + dimension.identifier(), e);
             return false;
         }
     }
@@ -121,6 +121,8 @@ public final class ConflictManager {
             McaRegionFile mca = McaFileHelpers.readAuto(regionFile.toFile());
             return mca.getChunk(pos.getRegionLocalX(), pos.getRegionLocalZ()) != null;
         } catch (Exception e) {
+            WMLogger.warnRateLimited("conflict-presence-read", 30_000L,
+                    "Conflict presence check failed file=" + regionFile + " chunk=" + pos, e);
             return false;
         }
     }
@@ -151,8 +153,8 @@ public final class ConflictManager {
                     }
                 }
             } catch (Exception e) {
-                WMLogger.warn("ConflictManager.listConflicts: error reading "
-                        + f.getName() + ": " + e.getMessage());
+                WMLogger.warnRateLimited("conflict-list-read", 30_000L,
+                        "Conflict index read failed file=" + f.getName(), e);
             }
         }
         return result;
@@ -175,7 +177,8 @@ public final class ConflictManager {
                 } catch (Exception ignored) {}
             });
         } catch (IOException e) {
-            WMLogger.warn("ConflictManager.countAllConflicts error: " + e.getMessage());
+            WMLogger.warnRateLimited("conflict-count", 30_000L,
+                    "Conflict count failed world=" + worldFolder, e);
         }
         return count[0];
     }
@@ -233,8 +236,8 @@ public final class ConflictManager {
                 }
             }
         } catch (Exception e) {
-            WMLogger.warn("ConflictManager.resolveConflict error for " + pos
-                    + ": " + e.getMessage());
+            WMLogger.warn("Conflict resolution failed chunk=" + pos
+                    + " overwrite=" + overwrite, e);
         }
     }
 
@@ -265,7 +268,8 @@ public final class ConflictManager {
                 }
             }
         } catch (IOException e) {
-            WMLogger.warn("ConflictManager.clearAllConflicts error: " + e.getMessage());
+            WMLogger.warn("Conflict cleanup failed world=" + worldFolder
+                    + " overwrite=" + overwrite, e);
         }
 
         // Clean up any empty directories left behind
@@ -301,7 +305,8 @@ public final class ConflictManager {
                 McaWriteSupport.writeAtomicallyLocked(worldMca, worldFile);
             }
         } catch (Exception e) {
-            WMLogger.warn("ConflictManager.applyConflictRegionToWorld error: " + e.getMessage());
+            WMLogger.warn("Conflict region apply failed source=" + conflictFile
+                    + " target=" + worldFile, e);
         }
     }
 
