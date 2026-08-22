@@ -24,8 +24,12 @@ public class ModConfig implements ConfigData {
         SAVES
     }
 
-    public enum LogLevel {
-        DEBUG, INFO, WARNING
+    /** Download pipeline selected for the next activation. */
+    public enum DownloadPipelineMode {
+        /** Hardened periodic exporter; conservative default for the 0.3 line. */
+        STABLE_PERIODIC,
+        /** Event-driven capture and adaptive durability scheduling. */
+        EXPERIMENTAL_ADAPTIVE
     }
 
     public enum ConflictStrategy {
@@ -67,7 +71,7 @@ public class ModConfig implements ConfigData {
 
     @ConfigEntry.Gui.Tooltip
     @ConfigEntry.Gui.EnumHandler(option = ConfigEntry.Gui.EnumHandler.EnumDisplayOption.DROPDOWN)
-    public LogLevel logLevel = LogLevel.INFO;
+    public DownloadPipelineMode pipelineMode = DownloadPipelineMode.STABLE_PERIODIC;
 
     @ConfigEntry.Gui.Tooltip
     @ConfigEntry.Gui.EnumHandler(option = ConfigEntry.Gui.EnumHandler.EnumDisplayOption.DROPDOWN)
@@ -77,6 +81,40 @@ public class ModConfig implements ConfigData {
 
     @ConfigEntry.Gui.CollapsibleObject
     public CacheConfig cache = new CacheConfig();
+
+    @ConfigEntry.Gui.CollapsibleObject
+    public PerformanceConfig performance = new PerformanceConfig();
+
+    public static class PerformanceConfig {
+        /** Main-thread time budget used by the stable capture queue. */
+        @ConfigEntry.Gui.Tooltip
+        @ConfigEntry.BoundedDiscrete(min = 250, max = 5000)
+        public int captureBudgetMicros = 1500;
+
+        /** Maximum dirty backlog before the adaptive writer flushes immediately. */
+        @ConfigEntry.Gui.Tooltip
+        @ConfigEntry.BoundedDiscrete(min = 32, max = 8192)
+        public int adaptiveDirtyHighWatermark = 512;
+
+        /** Maximum time an adaptive dirty revision may wait before an export begins. */
+        @ConfigEntry.Gui.Tooltip
+        @ConfigEntry.BoundedDiscrete(min = 1, max = 60)
+        public int adaptiveMaxLatencySeconds = 5;
+
+        /** Upper bound for coalesced chunk-capture hints. */
+        @ConfigEntry.Gui.Tooltip
+        @ConfigEntry.BoundedDiscrete(min = 512, max = 32768)
+        public int maxPendingCaptureHints = 8192;
+
+        /** Emit low-frequency pipeline snapshots and slow-stage timings. */
+        @ConfigEntry.Gui.Tooltip
+        public boolean diagnosticPerformanceLogging = false;
+
+        /** Log an individual region stage when it exceeds this duration. */
+        @ConfigEntry.Gui.Tooltip
+        @ConfigEntry.BoundedDiscrete(min = 50, max = 10000)
+        public int slowRegionMillis = 500;
+    }
 
     @ConfigEntry.Gui.CollapsibleObject
     public ChunkMapConfig chunkMap = new ChunkMapConfig();

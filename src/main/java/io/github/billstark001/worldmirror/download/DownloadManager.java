@@ -25,11 +25,14 @@ import net.minecraft.resources.ResourceKey;
 import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.chunk.ChunkAccess;
+import net.minecraft.world.level.chunk.status.ChunkStatus;
 import net.minecraft.world.level.chunk.LevelChunk;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.sql.SQLException;
+import java.lang.management.GarbageCollectorMXBean;
+import java.lang.management.ManagementFactory;
 import java.util.ArrayDeque;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -37,6 +40,10 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
 
 /**
  * Central controller for the download lifecycle.
@@ -56,14 +63,16 @@ public final class DownloadManager {
 
     private static final AtomicBoolean currentActive = new AtomicBoolean(false);
     private static long lastPeriodicSyncMs = 0;
+    private static long lastCacheEvictionMs = 0;
     private static final AtomicBoolean exportInProgress = new AtomicBoolean(false);
     /** Guards against starting a second initial-capture while one is still running. */
     private static final AtomicBoolean captureInProgress = new AtomicBoolean(false);
     private static final int INITIAL_CAPTURE_RANGE = 33;
     private static final int PRE_EXPORT_CAPTURE_RANGE = 8;
     private static final int STOP_CAPTURE_RANGE = 6;
-    private static final int CAPTURE_CHUNKS_PER_TICK = 8;
+    private static final int MAX_CAPTURE_CHUNKS_PER_TICK = 64;
     private static final int LIGHT_UPDATE_COALESCE_TICKS = 2;
+    private static final long CACHE_EVICTION_INTERVAL_MS = 5_000L;
     private static final Object captureQueueLock = new Object();
     private static final ArrayDeque<PendingChunkCapture> pendingCaptures = new ArrayDeque<>();
     private static final Set<CaptureKey> pendingCaptureSet = new HashSet<>();
@@ -71,11 +80,36 @@ public final class DownloadManager {
     private static PendingExportRequest pendingExport = null;
     private static long clientTick = 0;
     private static volatile boolean mirrorCaptureWarningShown;
+    private static volatile ModConfig.DownloadPipelineMode activePipelineMode =
+            ModConfig.DownloadPipelineMode.STABLE_PERIODIC;
+    private static final AtomicLong coalescedCaptureHints = new AtomicLong();
+    private static final AtomicLong droppedCaptureHints = new AtomicLong();
+    private static final AtomicBoolean captureReconciliationNeeded = new AtomicBoolean();
+    private static final AtomicLong exportFailures = new AtomicLong();
+    private static final AtomicLong entityRevision = new AtomicLong(1L);
+    private static final AtomicLong durableEntityRevision = new AtomicLong();
+    private static volatile long lastCaptureMicros;
+    private static volatile long lastExportMillis;
+    private static volatile int lastExportWritten;
+    private static volatile int lastExportSettled;
+    private static volatile ChunkExporter.ExportTimings lastExportTimings =
+            new ChunkExporter.ExportTimings(0, 0, 0, 0, 0, 0);
+    private static volatile long lastDurabilityIndexMillis;
+    private static volatile long lastDiagnosticLogMs;
+    private static volatile long lastGcCount = -1L;
+    private static volatile long lastGcTimeMs = -1L;
+    private static final ThreadPoolExecutor exportExecutor = new ThreadPoolExecutor(
+            0, 1, 30L, TimeUnit.SECONDS, new LinkedBlockingQueue<>(1), runnable -> {
+                Thread thread = new Thread(runnable, "WM-Export");
+                thread.setDaemon(false);
+                return thread;
+            });
 
     private record CaptureKey(ResourceKey<Level> dimension, int chunkX, int chunkZ) { }
-    private record PendingChunkCapture(CaptureKey key, String reason) { }
+    private record PendingChunkCapture(CaptureKey key, String reason, long enqueuedAtMs) { }
     private record PendingExportRequest(
             boolean shouldNotify,
+            boolean requiresPreCapture,
             String preferredSourceId,
             String preferredSourceType,
             Map<ResourceKey<Level>, Map<BlockPos, CompoundTag>> containerSnapshot
@@ -105,18 +139,92 @@ public final class DownloadManager {
         return exportInProgress.get();
     }
 
+    public static void markEntitiesDirty() {
+        if (currentActive.get()) entityRevision.incrementAndGet();
+    }
+
+    public record PipelineMetrics(
+            ModConfig.DownloadPipelineMode mode,
+            int pendingCaptures,
+            int dirtyChunks,
+            long oldestCaptureAgeMs,
+            long coalescedHints,
+            long droppedHints,
+            long lastCaptureMicros,
+            long lastExportMillis,
+            int lastExportWritten,
+            int lastExportSettled,
+            long exportFailures) { }
+
+    public static PipelineMetrics getPipelineMetrics() {
+        synchronized (captureQueueLock) {
+            PendingChunkCapture oldest = pendingCaptures.peekFirst();
+            long age = oldest == null ? 0L
+                    : Math.max(0L, System.currentTimeMillis() - oldest.enqueuedAtMs());
+            return new PipelineMetrics(activePipelineMode, pendingCaptures.size(),
+                    ChunkListener.getDirtyCount(), age, coalescedCaptureHints.get(),
+                    droppedCaptureHints.get(), lastCaptureMicros, lastExportMillis,
+                    lastExportWritten, lastExportSettled, exportFailures.get());
+        }
+    }
+
+    /** Coalesces a packet/event hint into one main-thread capture per chunk. */
+    public static void queueChunkCapture(ClientLevel world, ChunkPos pos, String reason) {
+        if (!currentActive.get() || world == null || pos == null) return;
+        queueCaptureKey(new CaptureKey(world.dimension(),
+                pos.getMinBlockX() >> 4, pos.getMinBlockZ() >> 4), reason);
+    }
+
+    /** Last-chance main-thread capture before Fabric removes a loaded chunk. */
+    public static void captureChunkBeforeUnload(ClientLevel world, LevelChunk chunk) {
+        if (!currentActive.get() || world == null || chunk == null) return;
+        CaptureKey key = new CaptureKey(world.dimension(),
+                chunk.getPos().getMinBlockX() >> 4, chunk.getPos().getMinBlockZ() >> 4);
+        synchronized (captureQueueLock) {
+            pendingLightUpdates.remove(key);
+            captureInProgress.set(hasPendingCaptureWorkLocked());
+        }
+        try {
+            if (!ChunkSerializer.isChunkEmpty(chunk)) {
+                ChunkListener.addChunkNbt(world.dimension(), chunk.getPos(),
+                        ChunkSerializer.serialize(world, chunk));
+            }
+        } catch (Exception e) {
+            WMLogger.warnRateLimited("capture-unload", 30_000L,
+                    "Final capture before unload failed at " + chunk.getPos()
+                            + "; cached data may be stale: " + e.getMessage());
+        }
+    }
+
+    private static boolean queueCaptureKey(CaptureKey key, String reason) {
+        synchronized (captureQueueLock) {
+            if (!pendingCaptureSet.add(key)) {
+                coalescedCaptureHints.incrementAndGet();
+                return false;
+            }
+            int limit = ModConfig.get().performance.maxPendingCaptureHints;
+            if (pendingCaptures.size() >= limit) {
+                pendingCaptureSet.remove(key);
+                droppedCaptureHints.incrementAndGet();
+                captureReconciliationNeeded.set(true);
+                WMLogger.warnRateLimited("capture-queue-capacity", 30_000L,
+                        "Capture-hint queue reached its configured limit (" + limit
+                                + "); coalescing overflow and scheduling a loaded-chunk reconciliation.");
+                return false;
+            }
+            pendingCaptures.add(new PendingChunkCapture(key, reason, System.currentTimeMillis()));
+            captureInProgress.set(true);
+            return true;
+        }
+    }
+
     /** Queues a normal capture when a light packet arrives before its base chunk. */
     public static void queueLightUpdateCapture(ClientLevel world, ChunkPos pos) {
         if (world == null || pos == null) return;
 
         CaptureKey key = new CaptureKey(world.dimension(),
                 pos.getMinBlockX() >> 4, pos.getMinBlockZ() >> 4);
-        synchronized (captureQueueLock) {
-            if (pendingCaptureSet.add(key)) {
-                pendingCaptures.add(new PendingChunkCapture(key, "light-update-no-base"));
-            }
-            captureInProgress.set(hasPendingCaptureWorkLocked());
-        }
+        queueCaptureKey(key, "light-update-no-base");
     }
 
     /**
@@ -168,14 +276,14 @@ public final class DownloadManager {
         if (ChunkListener.isEmpty() && !canPreCapture) {
             Component msg = Component.translatable("msg.worldmirror.noChunks");
             WMLogger.sendSystemMessage(client.player, msg);
-            WMLogger.warn("No chunks to export.");
+            WMLogger.debug("Manual export ignored because no chunks are cached.");
             return;
         }
         if (exportInProgress.get()) {
             Component msg = Component.translatable("msg.worldmirror.exportBusy");
             WMLogger.sendSystemMessage(client.player, msg);
-            deferExport(true, null, null, ContainerTracker.snapshotSavedData());
-            WMLogger.warn("Export already in progress; queued another export pass.");
+            deferExport(true, true, null, null, ContainerTracker.snapshotSavedData());
+            WMLogger.debug("Export already in progress; coalesced another export request.");
             return;
         }
         startBackgroundSync(client, true);
@@ -291,12 +399,24 @@ public final class DownloadManager {
         if (!currentActive.get()) return;
 
         long now = System.currentTimeMillis();
-        long interval = (long) ModConfig.get().syncIntervalSeconds * 1000L;
-        if (now - lastPeriodicSyncMs >= interval) {
+        ModConfig cfg = ModConfig.get();
+        long interval = activePipelineMode == ModConfig.DownloadPipelineMode.EXPERIMENTAL_ADAPTIVE
+                ? (long) cfg.performance.adaptiveMaxLatencySeconds * 1000L
+                : (long) cfg.syncIntervalSeconds * 1000L;
+        int dirty = ChunkListener.getDirtyCount();
+        boolean entityDirty = entityRevision.get() > durableEntityRevision.get();
+        boolean highWatermark = activePipelineMode == ModConfig.DownloadPipelineMode.EXPERIMENTAL_ADAPTIVE
+                && dirty >= cfg.performance.adaptiveDirtyHighWatermark;
+        boolean due = now - lastPeriodicSyncMs >= interval;
+        if ((due || highWatermark) && (dirty > 0 || entityDirty)) {
             lastPeriodicSyncMs = now;
-            applyCacheEviction(client);
             startBackgroundSync(client, false);
         }
+        if (now - lastCacheEvictionMs >= CACHE_EVICTION_INTERVAL_MS) {
+            lastCacheEvictionMs = now;
+            applyCacheEviction(client);
+        }
+        maybeLogPerformanceSnapshot(now);
     }
 
     /**
@@ -575,10 +695,14 @@ public final class DownloadManager {
 
     private static void activateDownload(Minecraft client, String reason) {
         if (!currentActive.compareAndSet(false, true)) return;
+        activePipelineMode = ModConfig.get().pipelineMode;
+        entityRevision.incrementAndGet();
         lastPeriodicSyncMs = System.currentTimeMillis();
+        lastCacheEvictionMs = lastPeriodicSyncMs;
         if (client.level != null) captureLoadedChunksAsync(client);
         WMLogger.sendOverlayMessage(client.player, Component.translatable("msg.worldmirror.downloadStart"));
-        WMLogger.debug("Download activated" + (reason == null ? "" : " by " + reason));
+        WMLogger.info("Download activated with pipeline=" + activePipelineMode
+                + (reason == null ? "" : " by " + reason));
     }
 
     // ── Internal ─────────────────────────────────────────────────────────────
@@ -623,7 +747,7 @@ public final class DownloadManager {
 
         for (int cx = playerCX - STOP_CAPTURE_RANGE; cx <= playerCX + STOP_CAPTURE_RANGE; cx++) {
             for (int cz = playerCZ - STOP_CAPTURE_RANGE; cz <= playerCZ + STOP_CAPTURE_RANGE; cz++) {
-                ChunkAccess chunk = world.getChunk(cx, cz);
+                ChunkAccess chunk = world.getChunk(cx, cz, ChunkStatus.FULL, false);
                 if (!(chunk instanceof LevelChunk wc)) continue;
                 try {
                     if (ChunkSerializer.isChunkEmpty(wc)) continue;
@@ -631,8 +755,9 @@ public final class DownloadManager {
                     ChunkListener.addChunkNbt(dimension, wc.getPos(), nbt);
                     captured++;
                 } catch (Exception e) {
-                    WMLogger.warn("captureNearbyLoadedChunksSync(" + reason + "): failed at "
-                            + wc.getPos() + ": " + e.getMessage());
+                    WMLogger.warnRateLimited("capture-stop-" + reason, 30_000L,
+                            "Stop-time capture failed at " + wc.getPos()
+                                    + " (" + reason + "): " + e.getMessage());
                 }
             }
         }
@@ -678,7 +803,8 @@ public final class DownloadManager {
                                             String preferredSourceType,
                                             Map<ResourceKey<Level>, Map<BlockPos, CompoundTag>> preferredContainerSnapshot) {
         if (exportInProgress.get()) {
-            deferExport(notify, preferredSourceId, preferredSourceType,
+            deferExport(notify, notify && !preCaptureAlreadyDone,
+                    preferredSourceId, preferredSourceType,
                     preferredContainerSnapshot != null
                             ? preferredContainerSnapshot
                             : ContainerTracker.snapshotSavedData());
@@ -689,37 +815,43 @@ public final class DownloadManager {
         // A light overlay is already up to date, but its dirty timestamp is
         // deliberately delayed so a burst exports as one coherent chunk write.
         if (!preCaptureAlreadyDone && hasPendingLightUpdates()) {
-            deferExport(notify, preferredSourceId, preferredSourceType, preferredContainerSnapshot);
+            deferExport(notify, notify, preferredSourceId, preferredSourceType,
+                    preferredContainerSnapshot);
             return;
         }
 
         // Queue nearby capture work and defer export until that incremental
         // capture has finished. This keeps all chunk/world access on the main
         // thread without blocking it for hundreds of serialisations at once.
-        if (!preCaptureAlreadyDone && ModConfig.get().lifecycle.captureNearbyBeforeExport
+        if (!preCaptureAlreadyDone && notify && ModConfig.get().lifecycle.captureNearbyBeforeExport
                 && client.level != null && client.player != null) {
             int playerCX = client.player.getBlockX() >> 4;
             int playerCZ = client.player.getBlockZ() >> 4;
             int queued = queueLoadedChunks(client.level, playerCX, playerCZ,
                     PRE_EXPORT_CAPTURE_RANGE, "pre-export");
             if (queued > 0 || captureInProgress.get()) {
-                deferExport(notify, preferredSourceId, preferredSourceType, preferredContainerSnapshot);
+                deferExport(notify, false, preferredSourceId, preferredSourceType,
+                        preferredContainerSnapshot);
                 return;
             }
         }
 
         // ── Game-thread preparations ──────────────────────────────────────────
         Map<ResourceKey<Level>, Map<ChunkPos, ChunkListener.CapturedChunk>> snapshot =
-                ChunkListener.snapshot();
+                ChunkListener.snapshotDirtyReferences();
         EntityTracker.pruneToMatchCapturedChunks();
 
-        // Capture entities for the current dimension (must happen on game thread)
-        if (client.level != null) {
+        // Capture entities only when an entity packet/lifecycle event advanced
+        // their revision. This retains periodic correctness without rewriting
+        // every entity region on terrain-only passes.
+        long entitySnapshotRevision = entityRevision.get();
+        boolean captureEntities = entitySnapshotRevision > durableEntityRevision.get();
+        if (captureEntities && client.level != null) {
             EntityTracker.captureEntitiesForWorld(client.level);
             EntityTracker.pruneToMatchCapturedChunks();
         }
         Map<ResourceKey<Level>, Map<ChunkPos, List<CompoundTag>>> entitySnapshot =
-                EntityTracker.snapshot();
+                captureEntities ? EntityTracker.snapshot() : Map.of();
         Map<ResourceKey<Level>, Map<BlockPos, CompoundTag>> containerSnapshot =
                 preferredContainerSnapshot != null
                         ? preferredContainerSnapshot
@@ -759,20 +891,22 @@ public final class DownloadManager {
         }
 
         int totalChunks = snapshot.values().stream().mapToInt(Map::size).sum();
-        WMLogger.info("Queuing background export of " + totalChunks
-                + " cached chunk(s) across " + snapshot.size() + " dimension(s)...");
+        WMLogger.debug("Queued export: dirtySnapshot=" + totalChunks + " dimensions="
+                + snapshot.size() + " pipeline=" + activePipelineMode);
 
         // ── Background thread ─────────────────────────────────────────────────
         exportInProgress.set(true);
         final Path finalWorldFolder = worldFolder;
 
-        Thread worker = new Thread(() -> {
+        Runnable worker = () -> {
             ChunkDatabase db = null;
+            long exportStartedNs = System.nanoTime();
             try {
                 MirrorMigrationPlan.Inspection readiness = MirrorMigrationCoordinator.inspect(finalWorldFolder);
                 if (!readiness.mayCreateOrWriteWithoutMigration()) {
                     WMLogger.warn("Mirror requires an explicit upgrade or is not writable ("
                             + readiness.state() + "); export aborted without modifying it.");
+                    notifyExportFailure(notify);
                     return;
                 }
 
@@ -790,6 +924,7 @@ public final class DownloadManager {
                         createFreshWorld);
                 if (!worldgenReady) {
                     WMLogger.warn("World generation setup failed; export aborted before writing chunks.");
+                    notifyExportFailure(notify);
                     return;
                 }
                 if (createFreshWorld) {
@@ -804,6 +939,7 @@ public final class DownloadManager {
                     db = ChunkDatabase.open(finalWorldFolder, finalSourceId);
                 } catch (SQLException e) {
                     WMLogger.warn("Could not open chunk database, export aborted: " + e.getMessage());
+                    notifyExportFailure(notify);
                     return;
                 }
 
@@ -812,43 +948,89 @@ public final class DownloadManager {
 
                 ConflictResolver resolver = buildResolverForSource(finalSourceId);
 
-                Map<ResourceKey<Level>, Set<ChunkPos>> written =
-                        ChunkExporter.exportChunks(finalWorldFolder, snapshot, entitySnapshot,
-                                containerSnapshot, resolver, db);
+                ChunkExporter.ExportResult result = ChunkExporter.exportChunks(
+                        finalWorldFolder, snapshot, entitySnapshot,
+                        containerSnapshot, resolver, db);
+                lastExportTimings = result.timings();
 
-                meta.markSyncComplete(finalWorldFolder);
-
-                for (Map.Entry<ResourceKey<Level>, Set<ChunkPos>> dimEntry : written.entrySet()) {
+                Map<ResourceKey<Level>, Map<ChunkPos, Long>> durableWritten = new HashMap<>();
+                boolean durabilityIndexSuccessful = true;
+                long durabilityIndexStartedNs = System.nanoTime();
+                for (Map.Entry<ResourceKey<Level>, Map<ChunkPos, ChunkExporter.WriteStamp>> dimEntry
+                        : result.written().entrySet()) {
                     String dimStr = dimEntry.getKey().identifier().toString();
-                    db.recordUpdates(dimStr, dimEntry.getValue(), "world_mirror");
+                    Map<ChunkPos, Long> timestamps = new HashMap<>();
+                    Map<ChunkPos, Long> revisions = new HashMap<>();
+                    dimEntry.getValue().forEach((pos, stamp) -> {
+                        timestamps.put(pos, stamp.capturedAtMs());
+                        revisions.put(pos, stamp.revision());
+                    });
+                    if (db.recordUpdates(dimStr, timestamps, "world_mirror")) {
+                        durableWritten.put(dimEntry.getKey(), revisions);
+                    } else {
+                        durabilityIndexSuccessful = false;
+                        WMLogger.warn("Durability-index commit failed for [" + dimStr
+                                + "]; retaining " + revisions.size() + " revision(s) for retry.");
+                    }
+                }
+                lastDurabilityIndexMillis =
+                        (System.nanoTime() - durabilityIndexStartedNs) / 1_000_000L;
+
+                boolean invalidate = ModConfig.get().cache.invalidateAfterExport;
+                ChunkListener.acknowledge(result.settledRevisions(), invalidate);
+                ChunkListener.acknowledge(durableWritten, invalidate);
+                if (result.entityWritesSuccessful()) {
+                    durableEntityRevision.accumulateAndGet(entitySnapshotRevision, Math::max);
+                    if (entityRevision.get() == entitySnapshotRevision) {
+                        EntityTracker.discardDurableEmptyMarkers(entitySnapshot);
+                    }
                 }
 
-                if (ModConfig.get().cache.invalidateAfterExport && !written.isEmpty()) {
-                    ChunkListener.invalidateChunks(written);
+                boolean passSuccessful = result.chunkWritesSuccessful()
+                        && result.entityWritesSuccessful()
+                        && durabilityIndexSuccessful;
+                if (passSuccessful) {
+                    meta.markSyncComplete(finalWorldFolder);
+                } else {
+                    exportFailures.incrementAndGet();
                 }
 
-                int totalWritten = written.values().stream().mapToInt(Set::size).sum();
-                WMLogger.info("Export complete: " + totalWritten + "/"
-                        + totalChunks + " chunks written.");
+                int totalWritten = result.totalWritten();
+                lastExportWritten = totalWritten;
+                lastExportSettled = result.settledWithoutWrite().values().stream()
+                        .mapToInt(Map::size).sum();
+                long elapsedMs = (System.nanoTime() - exportStartedNs) / 1_000_000L;
+                WMLogger.info("Export pass complete: status="
+                        + (passSuccessful ? "success" : "partial")
+                        + " pipeline=" + activePipelineMode
+                        + " dirtySnapshot=" + totalChunks
+                        + " written=" + totalWritten
+                        + " settled=" + lastExportSettled
+                        + " dirtyRemaining=" + ChunkListener.getDirtyCount()
+                        + " elapsedMs=" + elapsedMs);
 
-                if (notify && totalWritten > 0) {
+                if (notify && passSuccessful) {
                     Minecraft.getInstance().execute(() -> {
                         Minecraft mc = Minecraft.getInstance();
                         WMLogger.sendSystemMessage(
                                 mc.player, Component.translatable("msg.worldmirror.exportDone"));
                     });
+                } else if (notify) {
+                    notifyExportFailure(true);
                 }
             } catch (Exception e) {
+                exportFailures.incrementAndGet();
                 WMLogger.warn("Export failed: " + e.getMessage(), e);
+                notifyExportFailure(notify);
             } finally {
+                lastExportMillis = (System.nanoTime() - exportStartedNs) / 1_000_000L;
                 if (db != null) db.close();
                 exportInProgress.set(false);
                 Minecraft.getInstance().execute(() ->
                         tryStartDeferredExport(Minecraft.getInstance()));
             }
-        }, "WM-Export");
-        worker.setDaemon(false);
-        worker.start();
+        };
+        exportExecutor.execute(worker);
     }
 
     private static int queueLoadedChunks(ClientLevel world, int playerCX, int playerCZ,
@@ -860,19 +1042,26 @@ public final class DownloadManager {
         synchronized (captureQueueLock) {
             for (int cx = playerCX - range; cx <= playerCX + range; cx++) {
                 for (int cz = playerCZ - range; cz <= playerCZ + range; cz++) {
-                    ChunkAccess chunk = world.getChunk(cx, cz);
+                    ChunkAccess chunk = world.getChunk(cx, cz, ChunkStatus.FULL, false);
                     if (!(chunk instanceof LevelChunk)) continue;
                     CaptureKey key = new CaptureKey(dimension, cx, cz);
-                    if (pendingCaptureSet.add(key)) {
-                        PendingChunkCapture request = new PendingChunkCapture(key, reason);
-                        pendingCaptures.add(request);
+                    if (queueCaptureKey(key, reason)) {
                         queued++;
                     }
                 }
             }
-            captureInProgress.set(hasPendingCaptureWorkLocked());
         }
         return queued;
+    }
+
+    private static void notifyExportFailure(boolean notify) {
+        if (!notify) return;
+        Minecraft.getInstance().execute(() -> {
+            Minecraft mc = Minecraft.getInstance();
+            WMLogger.sendSystemMessage(mc.player,
+                    Component.translatable("msg.worldmirror.exportFailed")
+                            .withStyle(ChatFormatting.RED));
+        });
     }
 
     private static void processPendingCaptures(Minecraft client) {
@@ -882,8 +1071,11 @@ public final class DownloadManager {
         ResourceKey<Level> currentDimension = world.dimension();
         int processed = 0;
         int captured = 0;
+        long startedNs = System.nanoTime();
+        long budgetNs = (long) captureBudgetMicros() * 1_000L;
 
-        while (processed < CAPTURE_CHUNKS_PER_TICK) {
+        while (processed < MAX_CAPTURE_CHUNKS_PER_TICK
+                && (processed == 0 || System.nanoTime() - startedNs < budgetNs)) {
             PendingChunkCapture request;
             synchronized (captureQueueLock) {
                 request = pendingCaptures.pollFirst();
@@ -902,7 +1094,8 @@ public final class DownloadManager {
                 continue;
             }
 
-            ChunkAccess chunk = world.getChunk(request.key().chunkX(), request.key().chunkZ());
+            ChunkAccess chunk = world.getChunk(request.key().chunkX(), request.key().chunkZ(),
+                    ChunkStatus.FULL, false);
             if (!(chunk instanceof LevelChunk wc)) {
                 continue;
             }
@@ -913,28 +1106,47 @@ public final class DownloadManager {
                 ChunkListener.addChunkNbt(request.key().dimension(), wc.getPos(), nbt);
                 captured++;
             } catch (Exception e) {
-                WMLogger.warn("Incremental capture failed at " + wc.getPos()
-                        + " (" + request.reason() + "): " + e.getMessage());
+                WMLogger.warnRateLimited("capture-incremental-" + request.reason(), 30_000L,
+                        "Incremental capture failed at " + wc.getPos()
+                                + " (" + request.reason() + "): " + e.getMessage());
             }
         }
 
+        lastCaptureMicros = (System.nanoTime() - startedNs) / 1_000L;
+
         if (captured > 0 && !captureInProgress.get()) {
             WMLogger.debug("Incremental chunk capture finished with " + captured + " chunk(s) on the last tick.");
+        }
+        if (!captureInProgress.get() && captureReconciliationNeeded.compareAndSet(true, false)) {
+            captureLoadedChunksAsync(client);
+        }
+    }
+
+    private static int captureBudgetMicros() {
+        int base = ModConfig.get().performance.captureBudgetMicros;
+        if (activePipelineMode != ModConfig.DownloadPipelineMode.EXPERIMENTAL_ADAPTIVE) return base;
+        synchronized (captureQueueLock) {
+            int backlog = pendingCaptures.size();
+            int high = Math.max(1, ModConfig.get().performance.adaptiveDirtyHighWatermark);
+            return Math.min(5000, base + (base * Math.min(backlog, high) / high));
         }
     }
 
     private static void deferExport(
             boolean notify,
+            boolean requiresPreCapture,
             String preferredSourceId,
             String preferredSourceType,
             Map<ResourceKey<Level>, Map<BlockPos, CompoundTag>> containerSnapshot) {
         synchronized (captureQueueLock) {
             if (pendingExport == null) {
                 pendingExport = new PendingExportRequest(
-                        notify, preferredSourceId, preferredSourceType, containerSnapshot);
+                        notify, requiresPreCapture, preferredSourceId,
+                        preferredSourceType, containerSnapshot);
             } else {
                 pendingExport = new PendingExportRequest(
                         pendingExport.shouldNotify() || notify,
+                        pendingExport.requiresPreCapture() || requiresPreCapture,
                         choosePreferred(preferredSourceId, pendingExport.preferredSourceId()),
                         choosePreferred(preferredSourceType, pendingExport.preferredSourceType()),
                         containerSnapshot != null ? containerSnapshot : pendingExport.containerSnapshot());
@@ -951,7 +1163,7 @@ public final class DownloadManager {
             request = pendingExport;
             pendingExport = null;
         }
-        startBackgroundSync(client, request.shouldNotify(), true,
+        startBackgroundSync(client, request.shouldNotify(), !request.requiresPreCapture(),
                 request.preferredSourceId(), request.preferredSourceType(),
                 request.containerSnapshot());
     }
@@ -962,6 +1174,7 @@ public final class DownloadManager {
             pendingCaptureSet.clear();
             pendingLightUpdates.clear();
             pendingExport = null;
+            captureReconciliationNeeded.set(false);
             captureInProgress.set(false);
         }
     }
@@ -1049,6 +1262,53 @@ public final class DownloadManager {
         ChunkListener.evictStale(maxAgeMs, maxCount, playerDim, playerCX, playerCZ, maxDist);
     }
 
+    private static void maybeLogPerformanceSnapshot(long nowMs) {
+        if (!ModConfig.get().performance.diagnosticPerformanceLogging
+                || nowMs - lastDiagnosticLogMs < 30_000L) return;
+        lastDiagnosticLogMs = nowMs;
+        PipelineMetrics m = getPipelineMetrics();
+        Runtime runtime = Runtime.getRuntime();
+        long usedMiB = (runtime.totalMemory() - runtime.freeMemory()) / (1024L * 1024L);
+        long committedMiB = runtime.totalMemory() / (1024L * 1024L);
+        long gcCount = 0L;
+        long gcTimeMs = 0L;
+        StringBuilder collectors = new StringBuilder();
+        for (GarbageCollectorMXBean bean : ManagementFactory.getGarbageCollectorMXBeans()) {
+            if (collectors.length() > 0) collectors.append('|');
+            collectors.append(bean.getName().replace(' ', '_'));
+            if (bean.getCollectionCount() >= 0) gcCount += bean.getCollectionCount();
+            if (bean.getCollectionTime() >= 0) gcTimeMs += bean.getCollectionTime();
+        }
+        long gcCountDelta = lastGcCount < 0 ? 0 : Math.max(0, gcCount - lastGcCount);
+        long gcTimeDelta = lastGcTimeMs < 0 ? 0 : Math.max(0, gcTimeMs - lastGcTimeMs);
+        lastGcCount = gcCount;
+        lastGcTimeMs = gcTimeMs;
+        ChunkExporter.ExportTimings timings = lastExportTimings;
+        WMLogger.info("[perf] pipeline=" + m.mode()
+                + " cache=" + ChunkListener.getTotalCount()
+                + " dirty=" + m.dirtyChunks()
+                + " captureQueue=" + m.pendingCaptures()
+                + " oldestHintMs=" + m.oldestCaptureAgeMs()
+                + " coalesced=" + m.coalescedHints()
+                + " dropped=" + m.droppedHints()
+                + " lastCaptureUs=" + m.lastCaptureMicros()
+                + " lastExportMs=" + m.lastExportMillis()
+                + " dbLookupMs=" + timings.databaseLookupMs()
+                + " materializeMs=" + timings.materializeMs()
+                + " regionReadMs=" + timings.chunkReadMs()
+                + " resolveMergeWriteMs=" + timings.resolveMergeWriteMs()
+                + " regionFlushMs=" + timings.flushMs()
+                + " entityWriteMs=" + timings.entityMs()
+                + " dbCommitMs=" + lastDurabilityIndexMillis
+                + " written=" + m.lastExportWritten()
+                + " settled=" + m.lastExportSettled()
+                + " failures=" + m.exportFailures()
+                + " heapMiB=" + usedMiB + "/" + committedMiB
+                + " gcCountDelta=" + gcCountDelta
+                + " gcTimeMsDelta=" + gcTimeDelta
+                + " gcCollectors=" + collectors);
+    }
+
     // ── Export nearby region ──────────────────────────────────────────────────
 
     /**
@@ -1085,16 +1345,17 @@ public final class DownloadManager {
         Map<ChunkPos, ChunkListener.CapturedChunk> nearbyChunks = new HashMap<>();
         for (int cx = playerCX - radiusChunks; cx <= playerCX + radiusChunks; cx++) {
             for (int cz = playerCZ - radiusChunks; cz <= playerCZ + radiusChunks; cz++) {
-                ChunkAccess chunk = world.getChunk(cx, cz);
+                ChunkAccess chunk = world.getChunk(cx, cz, ChunkStatus.FULL, false);
                 if (!(chunk instanceof LevelChunk wc)) continue;
                 try {
                     if (ChunkSerializer.isChunkEmpty(wc)) continue;
                     CompoundTag nbt = ChunkSerializer.serialize(world, wc);
                     nearbyChunks.put(wc.getPos(),
-                            new ChunkListener.CapturedChunk(nbt, System.currentTimeMillis()));
+                            new ChunkListener.CapturedChunk(nbt, System.currentTimeMillis(), 0L));
                 } catch (Exception e) {
-                    WMLogger.warn("exportNearbyToNewSave: failed to capture " + wc.getPos()
-                            + ": " + e.getMessage());
+                    WMLogger.warnRateLimited("nearby-capture", 30_000L,
+                            "Nearby-export capture failed at " + wc.getPos()
+                                    + ": " + e.getMessage());
                 }
             }
         }
@@ -1141,9 +1402,23 @@ public final class DownloadManager {
                 Files.createDirectories(finalOut);
                 ChunkDatabase db = ChunkDatabase.open(finalOut, sourceId);
                 try {
-                    ChunkExporter.exportChunks(
+                    ChunkExporter.ExportResult result = ChunkExporter.exportChunks(
                             finalOut, snapshot, entitySnapshot, containerSnapshot,
                             new OverwriteResolver(), db);
+                    for (Map.Entry<ResourceKey<Level>, Map<ChunkPos, ChunkExporter.WriteStamp>> dimEntry
+                            : result.written().entrySet()) {
+                        Map<ChunkPos, Long> timestamps = new HashMap<>();
+                        dimEntry.getValue().forEach((pos, stamp) ->
+                                timestamps.put(pos, stamp.capturedAtMs()));
+                        if (!db.recordUpdates(dimEntry.getKey().identifier().toString(),
+                                timestamps, "world_mirror")) {
+                            throw new SQLException("Could not commit nearby-export durability index");
+                        }
+                    }
+                    if (!result.chunkWritesSuccessful() || !result.entityWritesSuccessful()) {
+                        throw new java.io.IOException(
+                                "One or more nearby-export region writes failed");
+                    }
                 } finally {
                     db.close();
                 }

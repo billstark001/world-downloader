@@ -11,9 +11,9 @@ import java.nio.file.Paths;
 import java.sql.*;
 import java.util.Properties;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
 
 /**
  * Manages the per-world SQLite database at {@code <worldFolder>/data/world_mirror.sqlite}.
@@ -177,45 +177,50 @@ public class ChunkDatabase implements Closeable {
                 return existingPriority < newPriority;
             }
         } catch (SQLException e) {
-            WMLogger.warn("ChunkDatabase.shouldSkipUpdate error: " + e.getMessage());
+            WMLogger.warnRateLimited("db-dirty-check", 30_000L,
+                    "Chunk durability lookup failed; allowing writes until recovery: "
+                            + e.getMessage());
             return false; // fail-open: allow update on error
         }
     }
 
     /**
-     * Batch-records that a set of chunks was written by {@code updateSource} at
-     * the current time.  Executes inside a single transaction for efficiency.
+     * Batch-records the exact capture timestamp represented by each durable
+     * chunk write.  Using commit time here can incorrectly acknowledge an update
+     * that arrived while an older revision was being written.
      *
-     * @param dimension    dimension key
-     * @param positions    chunk positions that were written
-     * @param updateSource name of the update source (e.g. {@code "world_mirror"})
+     * @return true only when the transaction committed successfully
      */
-    public void recordUpdates(String dimension, Set<ChunkPos> positions, String updateSource) {
-        if (positions.isEmpty()) return;
-        long now = System.currentTimeMillis();
+    public boolean recordUpdates(
+            String dimension, Map<ChunkPos, Long> timestamps, String updateSource) {
+        if (timestamps.isEmpty()) return true;
         String sql =
             "INSERT INTO chunks (source, dimension, x, y, update_time, update_source) " +
             "VALUES (?, ?, ?, ?, ?, ?) " +
             "ON CONFLICT(source, dimension, x, y) DO UPDATE SET " +
-            "  update_time=excluded.update_time, update_source=excluded.update_source";
+            "  update_time=excluded.update_time, update_source=excluded.update_source " +
+            "WHERE excluded.update_time >= chunks.update_time";
         try {
             conn.setAutoCommit(false);
             try (PreparedStatement ps = conn.prepareStatement(sql)) {
-                for (ChunkPos pos : positions) {
+                for (Map.Entry<ChunkPos, Long> entry : timestamps.entrySet()) {
+                    ChunkPos pos = entry.getKey();
                     ps.setString(1, sourceId);
                     ps.setString(2, dimension);
                     ps.setInt(3, pos.getMinBlockX() >> 4);
                     ps.setInt(4, pos.getMinBlockZ() >> 4);
-                    ps.setLong(5, now);
+                    ps.setLong(5, entry.getValue());
                     ps.setString(6, updateSource);
                     ps.addBatch();
                 }
                 ps.executeBatch();
             }
             conn.commit();
+            return true;
         } catch (SQLException e) {
             WMLogger.warn("ChunkDatabase.recordUpdates error: " + e.getMessage());
             try { conn.rollback(); } catch (SQLException ignored) {}
+            return false;
         } finally {
             try { conn.setAutoCommit(true); } catch (SQLException ignored) {}
         }
@@ -414,7 +419,9 @@ public class ChunkDatabase implements Closeable {
                 if (rs.next()) return rs.getInt("priority");
             }
         } catch (SQLException e) {
-            WMLogger.warn("ChunkDatabase.getPriority error: " + e.getMessage());
+            WMLogger.warnRateLimited("db-priority", 30_000L,
+                    "Chunk-source priority lookup failed; using fallback priority: "
+                            + e.getMessage());
         }
         return Integer.MAX_VALUE;
     }

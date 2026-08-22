@@ -4,7 +4,6 @@ import java.util.HashMap;
 import java.util.Map;
 
 import io.github.billstark001.worldmirror.core.ContainerTracker;
-import io.github.billstark001.worldmirror.util.WMLogger;
 import net.fabricmc.api.EnvType;
 import net.fabricmc.api.Environment;
 import net.minecraft.core.BlockPos;
@@ -80,10 +79,6 @@ public final class BlockEntityNbtSupport {
             }
         }
 
-        if (restored > 0 || enriched > 0) {
-            WMLogger.debug("Merged block entities: restored=" + restored
-                    + ", enriched=" + enriched);
-        }
     }
 
     public static void applyContainerOverlays(ResourceKey<Level> dimension, CompoundTag chunkNbt) {

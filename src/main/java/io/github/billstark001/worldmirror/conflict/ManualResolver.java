@@ -20,12 +20,15 @@ public class ManualResolver implements ConflictResolver {
     public boolean shouldWriteChunk(ConflictContext context) {
         if (context.existsLocally()) {
             // Persist the incoming server chunk so the player can review it later.
-            ConflictManager.saveConflict(
+            boolean saved = ConflictManager.saveConflict(
                     context.worldFolder(),
                     context.pos(),
                     context.chunkNbt(),
                     context.dimension());
-            WMLogger.warn("Conflict saved for chunk " + context.pos()
+            if (!saved) {
+                throw new IllegalStateException("Could not persist incoming manual conflict");
+            }
+            WMLogger.debug("Conflict saved for chunk " + context.pos()
                     + " [" + context.dimension().identifier() + "]"
                     + " — keeping local copy until resolved.");
             return false;

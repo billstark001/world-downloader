@@ -8,23 +8,29 @@ import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
-import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * Shared MCA file write support.
  *
  * <p>Region writes are read-modify-write operations. Keep all callers on the
- * same per-file lock and replace files through a same-directory temp file so a
- * failed write does not leave a partially overwritten region behind.</p>
+ * same deterministic striped lock and replace files through a same-directory
+ * temp file so a failed write does not leave a partially overwritten region
+ * behind. Fixed striping avoids retaining one lock object for every region ever
+ * visited during a long session.</p>
  */
 public final class McaWriteSupport {
     private static final int WRITE_ATTEMPTS = 3;
-    private static final ConcurrentHashMap<Path, Object> FILE_LOCKS = new ConcurrentHashMap<>();
+    private static final Object[] FILE_LOCKS = new Object[256];
+
+    static {
+        java.util.Arrays.setAll(FILE_LOCKS, ignored -> new Object());
+    }
 
     private McaWriteSupport() {}
 
     public static Object lockFor(Path path) {
-        return FILE_LOCKS.computeIfAbsent(path.toAbsolutePath().normalize(), ignored -> new Object());
+        Path normalized = path.toAbsolutePath().normalize();
+        return FILE_LOCKS[Math.floorMod(normalized.hashCode(), FILE_LOCKS.length)];
     }
 
     public static int writeAtomically(McaFileBase<?> mcaFile, Path target) throws IOException {

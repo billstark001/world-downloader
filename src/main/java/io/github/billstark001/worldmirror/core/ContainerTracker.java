@@ -7,6 +7,7 @@ import java.util.concurrent.ConcurrentHashMap;
 
 import com.mojang.serialization.DataResult;
 import io.github.billstark001.worldmirror.util.WMLogger;
+import io.github.billstark001.worldmirror.download.DownloadManager;
 import net.fabricmc.api.EnvType;
 import net.fabricmc.api.Environment;
 import net.minecraft.client.Minecraft;
@@ -85,8 +86,6 @@ public class ContainerTracker {
 
         int totalSlots = contents.size();
         int containerSlots = determineContainerSlots(totalSlots);
-        WMLogger.debug("Processing container: " + totalSlots
-                + " total slots, " + containerSlots + " container slots");
 
         if (containerSlots == 54) {
             handleDoubleChest(container, contents);
@@ -153,9 +152,9 @@ public class ContainerTracker {
                     ? new OpenContainer(open.pos(), open.name(), new ConcurrentHashMap<>(combinedSlots), 54)
                     : open);
 
-            WMLogger.debug("Saved double chest:");
-            WMLogger.debug("  First chest at " + positions.first() + " with " + firstSlots.size() + "/27 items");
-            WMLogger.debug("  Second chest at " + positions.second() + " with " + secondSlots.size() + "/27 items");
+            WMLogger.debug("Saved double chest at " + positions.first() + "/"
+                    + positions.second() + " with " + firstSlots.size() + "+"
+                    + secondSlots.size() + " filled slots");
         } catch (Exception e) {
             WMLogger.warn("Failed to handle double chest, falling back: " + e.getMessage());
             handleRegularContainer(container, contents, 54);
@@ -245,6 +244,11 @@ public class ContainerTracker {
         overlay.put("Items", serializeItems(slots));
         serializeCustomName(name).ifPresent(customName -> overlay.put("CustomName", customName));
         savedContainerData.put(new ContainerKey(dimension, pos), overlay);
+        Minecraft client = Minecraft.getInstance();
+        if (client.level != null && client.level.dimension().equals(dimension)) {
+            DownloadManager.queueChunkCapture(client.level,
+                    new ChunkPos(pos.getX() >> 4, pos.getZ() >> 4), "container-update");
+        }
     }
 
     private static ListTag serializeItems(Map<Integer, ItemStack> slots) {
@@ -262,7 +266,9 @@ public class ContainerTracker {
             }
 
             DataResult<Tag> result = ItemStack.CODEC.encodeStart(ops, stack);
-            result.resultOrPartial(error -> WMLogger.warn("Failed to encode item stack: " + error))
+            result.resultOrPartial(error -> WMLogger.warnRateLimited(
+                            "container-item-encode", 30_000L,
+                            "Failed to encode a container item stack: " + error))
                     .ifPresent(tag -> {
                         if (tag instanceof CompoundTag itemNbt) {
                             itemNbt.putByte("Slot", entry.getKey().byteValue());
@@ -279,7 +285,9 @@ public class ContainerTracker {
         }
 
         return ComponentSerialization.CODEC.encodeStart(NbtOps.INSTANCE, name)
-                .resultOrPartial(error -> WMLogger.warn("Failed to encode container name: " + error));
+                .resultOrPartial(error -> WMLogger.warnRateLimited(
+                        "container-name-encode", 30_000L,
+                        "Failed to encode a container name: " + error));
     }
 
     private static boolean isDefaultContainerTitle(Component name) {

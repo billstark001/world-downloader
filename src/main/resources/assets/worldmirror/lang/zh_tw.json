@@ -19,6 +19,7 @@
   "msg.worldmirror.downloadStart":  "§aWorld Mirror：已啟動",
   "msg.worldmirror.downloadStop":   "§cWorld Mirror：已停用",
   "msg.worldmirror.exportDone":     "世界匯出成功。",
+  "msg.worldmirror.exportFailed":   "世界匯出失敗；詳情請查看 latest.log。",
   "msg.worldmirror.exportBusy":     "匯出進行中，請稍候。",
   "msg.worldmirror.noChunks":       "沒有快取的區塊，請先四處走動以載入區塊。",
   "msg.worldmirror.cleared":        "已清除區塊/實體/容器快取（磁碟資料不受影響）。",
@@ -155,12 +156,10 @@
 
   "text.autoconfig.worldmirror.option.syncIntervalSeconds": "同步間隔（秒）",
   "text.autoconfig.worldmirror.option.syncIntervalSeconds.@Tooltip": "下載啟動時，定期同步觸發的頻率（秒）。",
-
-  "text.autoconfig.worldmirror.option.logLevel": "日誌級別",
-  "text.autoconfig.worldmirror.option.logLevel.@Tooltip": "模組日誌輸出的詳細程度。",
-  "text.autoconfig.worldmirror.option.logLevel.debug":   "除錯",
-  "text.autoconfig.worldmirror.option.logLevel.info":    "資訊",
-  "text.autoconfig.worldmirror.option.logLevel.warning": "警告",
+  "text.autoconfig.worldmirror.option.pipelineMode": "下載管線",
+  "text.autoconfig.worldmirror.option.pipelineMode.@Tooltip": "下次開始下載時生效。穩定週期是加固後的預設模型；實驗性自適應模型會按變化觸發並限制落盤延遲。",
+  "text.autoconfig.worldmirror.option.pipelineMode.stable_periodic": "穩定週期（預設）",
+  "text.autoconfig.worldmirror.option.pipelineMode.experimental_adaptive": "實驗性自適應",
 
   "text.autoconfig.worldmirror.option.defaultConflictStrategy": "衝突策略",
   "text.autoconfig.worldmirror.option.defaultConflictStrategy.@Tooltip": "當本地區塊已存在時的處理方式。\nOVERWRITE：用伺服器版本取代本地區塊。\nIGNORE：保留本地區塊。\nMANUAL：排隊等待手動處理（回退為忽略）。",
@@ -181,6 +180,20 @@
 
   "text.autoconfig.worldmirror.option.cache.invalidateAfterExport": "匯出後清除快取",
   "text.autoconfig.worldmirror.option.cache.invalidateAfterExport.@Tooltip": "啟用後，區塊寫入磁碟後立即從記憶體中移除。",
+
+  "text.autoconfig.worldmirror.option.performance": "效能",
+  "text.autoconfig.worldmirror.option.performance.captureBudgetMicros": "擷取預算（微秒/刻）",
+  "text.autoconfig.worldmirror.option.performance.captureBudgetMicros.@Tooltip": "每個客戶端刻通常允許在主執行緒序列化排隊區塊的最長時間。",
+  "text.autoconfig.worldmirror.option.performance.adaptiveDirtyHighWatermark": "自適應髒區塊高水位",
+  "text.autoconfig.worldmirror.option.performance.adaptiveDirtyHighWatermark.@Tooltip": "實驗模型中，等待落盤的髒區塊達到此數量時立即開始寫入。",
+  "text.autoconfig.worldmirror.option.performance.adaptiveMaxLatencySeconds": "自適應最大延遲（秒）",
+  "text.autoconfig.worldmirror.option.performance.adaptiveMaxLatencySeconds.@Tooltip": "實驗模型允許髒 revision 等待持久化的最長時間。",
+  "text.autoconfig.worldmirror.option.performance.maxPendingCaptureHints": "最大擷取提示數",
+  "text.autoconfig.worldmirror.option.performance.maxPendingCaptureHints.@Tooltip": "等待主執行緒擷取的合併事件提示上限；區塊卸載時仍會執行最終擷取。",
+  "text.autoconfig.worldmirror.option.performance.diagnosticPerformanceLogging": "效能診斷日誌",
+  "text.autoconfig.worldmirror.option.performance.diagnosticPerformanceLogging.@Tooltip": "每 30 秒記錄管線、堆記憶體和耗時計數，並報告異常緩慢的 region 寫入。平時建議關閉。",
+  "text.autoconfig.worldmirror.option.performance.slowRegionMillis": "慢速 Region 閾值（毫秒）",
+  "text.autoconfig.worldmirror.option.performance.slowRegionMillis.@Tooltip": "啟用效能診斷時，報告超過此耗時的 region 階段。",
 
   "text.autoconfig.worldmirror.option.chunkMap": "區塊地圖",
 

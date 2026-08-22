@@ -19,6 +19,7 @@
   "msg.worldmirror.downloadStart":  "§aWorld Mirror：有効",
   "msg.worldmirror.downloadStop":   "§cWorld Mirror：無効",
   "msg.worldmirror.exportDone":     "ワールドのエクスポートが完了しました。",
+  "msg.worldmirror.exportFailed":   "ワールドのエクスポートに失敗しました。詳細は latest.log を確認してください。",
   "msg.worldmirror.exportBusy":     "エクスポート中です。しばらくお待ちください。",
   "msg.worldmirror.noChunks":       "キャッシュされたチャンクがありません。チャンクを読み込むために歩き回ってください。",
   "msg.worldmirror.cleared":        "チャンク/エンティティ/コンテナキャッシュをクリアしました（ディスクは変更されていません）。",
@@ -155,12 +156,10 @@
 
   "text.autoconfig.worldmirror.option.syncIntervalSeconds": "同期間隔（秒）",
   "text.autoconfig.worldmirror.option.syncIntervalSeconds.@Tooltip": "ダウンロードが有効な間、定期同期が発生する頻度（秒）。",
-
-  "text.autoconfig.worldmirror.option.logLevel": "ログレベル",
-  "text.autoconfig.worldmirror.option.logLevel.@Tooltip": "MODのログ出力の詳細度。",
-  "text.autoconfig.worldmirror.option.logLevel.debug":   "デバッグ",
-  "text.autoconfig.worldmirror.option.logLevel.info":    "情報",
-  "text.autoconfig.worldmirror.option.logLevel.warning": "警告",
+  "text.autoconfig.worldmirror.option.pipelineMode": "ダウンロードパイプライン",
+  "text.autoconfig.worldmirror.option.pipelineMode.@Tooltip": "次回ダウンロード開始時に適用されます。安定周期は強化済みの既定モデル、実験的適応は変更に反応して永続化遅延を制限します。",
+  "text.autoconfig.worldmirror.option.pipelineMode.stable_periodic": "安定周期（既定）",
+  "text.autoconfig.worldmirror.option.pipelineMode.experimental_adaptive": "実験的適応",
 
   "text.autoconfig.worldmirror.option.defaultConflictStrategy": "競合戦略",
   "text.autoconfig.worldmirror.option.defaultConflictStrategy.@Tooltip": "ローカルチャンクが既に存在する場合の処理方法。\nOVERWRITE：ローカルチャンクをサーバーバージョンで置き換える。\nIGNORE：ローカルチャンクを保持する。\nMANUAL：手動処理のためにキューに追加（Ignoreにフォールバック）。",
@@ -181,6 +180,20 @@
 
   "text.autoconfig.worldmirror.option.cache.invalidateAfterExport": "エクスポート後にキャッシュを無効化",
   "text.autoconfig.worldmirror.option.cache.invalidateAfterExport.@Tooltip": "有効にすると、チャンクがディスクに書き込まれた直後にメモリから削除されます。",
+
+  "text.autoconfig.worldmirror.option.performance": "パフォーマンス",
+  "text.autoconfig.worldmirror.option.performance.captureBudgetMicros": "キャプチャ予算（µs/tick）",
+  "text.autoconfig.worldmirror.option.performance.captureBudgetMicros.@Tooltip": "キュー済みチャンクのシリアライズに通常使用するメインスレッド時間の上限です。",
+  "text.autoconfig.worldmirror.option.performance.adaptiveDirtyHighWatermark": "適応ダーティ高水位",
+  "text.autoconfig.worldmirror.option.performance.adaptiveDirtyHighWatermark.@Tooltip": "実験モードで待機中のダーティチャンクがこの数に達すると直ちに書き込みます。",
+  "text.autoconfig.worldmirror.option.performance.adaptiveMaxLatencySeconds": "適応最大遅延（秒）",
+  "text.autoconfig.worldmirror.option.performance.adaptiveMaxLatencySeconds.@Tooltip": "実験モードでダーティ revision が永続化を待てる最長時間です。",
+  "text.autoconfig.worldmirror.option.performance.maxPendingCaptureHints": "最大キャプチャヒント数",
+  "text.autoconfig.worldmirror.option.performance.maxPendingCaptureHints.@Tooltip": "メインスレッドキャプチャを待つ統合イベントヒントの上限。アンロード時には最終キャプチャを行います。",
+  "text.autoconfig.worldmirror.option.performance.diagnosticPerformanceLogging": "パフォーマンス診断ログ",
+  "text.autoconfig.worldmirror.option.performance.diagnosticPerformanceLogging.@Tooltip": "30秒ごとにパイプライン、ヒープ、時間カウンターを記録し、遅い region 書き込みも報告します。通常はオフを推奨します。",
+  "text.autoconfig.worldmirror.option.performance.slowRegionMillis": "低速 Region しきい値（ms）",
+  "text.autoconfig.worldmirror.option.performance.slowRegionMillis.@Tooltip": "診断ログ有効時、この時間を超えた region ステージを報告します。",
 
   "text.autoconfig.worldmirror.option.chunkMap": "チャンクマップ",
 

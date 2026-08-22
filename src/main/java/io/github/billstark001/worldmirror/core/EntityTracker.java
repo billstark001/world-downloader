@@ -17,6 +17,8 @@ import net.minecraft.resources.ResourceKey;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.level.Level;
+import net.minecraft.world.level.chunk.LevelChunk;
+import net.minecraft.world.level.chunk.status.ChunkStatus;
 import net.minecraft.world.level.storage.ValueOutput;
 import net.minecraft.world.phys.Vec3;
 
@@ -35,8 +37,8 @@ public class EntityTracker {
      * covers every entity type — including paintings (motive / facing / attachment
      * position), item frames (held item, rotation), armour stands (pose, equipment,
      * flags), dropped items, mobs, animals, and more.  The entity type identifier
-     * is prepended as the {@code id} key before calling {@code writeData} so the
-     * resulting NBT is compatible with Minecraft's region-file format.
+     * is added as the {@code id} key after the client-visible data is captured so
+     * the resulting NBT is compatible with Minecraft's region-file format.
      */
     public static void captureEntitiesForWorld(ClientLevel world) {
         if (world == null) {
@@ -65,11 +67,23 @@ public class EntityTracker {
                     if (nbt != null) {
                         dimEntities.computeIfAbsent(chunkPos, k -> new ArrayList<>()).add(nbt);
                         total++;
-                        WMLogger.debug("Captured " + BuiltInRegistries.ENTITY_TYPE.getKey(entity.getType())
-                                + " at " + pos + " in chunk " + chunkPos);
                     }
                 } catch (Exception e) {
-                    WMLogger.warn("Failed to serialize entity at " + pos + ": " + e.getMessage());
+                    WMLogger.warnRateLimited("entity-serialize", 30_000L,
+                            "Failed to serialize an entity near " + pos + ": " + e.getMessage());
+                }
+            }
+        }
+
+        Map<ChunkPos, List<CompoundTag>> previous = dimChunkEntities.get(dimension);
+        if (previous != null) {
+            for (ChunkPos previousPos : previous.keySet()) {
+                boolean stillLoaded = world.getChunk(
+                        previousPos.getMinBlockX() >> 4,
+                        previousPos.getMinBlockZ() >> 4,
+                        ChunkStatus.FULL, false) instanceof LevelChunk;
+                if (stillLoaded && capturedChunks.containsKey(previousPos)) {
+                    dimEntities.putIfAbsent(previousPos, new ArrayList<>());
                 }
             }
         }
@@ -87,19 +101,30 @@ public class EntityTracker {
                 : dimChunkEntities.entrySet()) {
             Map<ChunkPos, List<CompoundTag>> dimCopy = new HashMap<>();
             for (Map.Entry<ChunkPos, List<CompoundTag>> chunkEntry : dimEntry.getValue().entrySet()) {
-                dimCopy.put(chunkEntry.getKey(), new ArrayList<>(chunkEntry.getValue()));
+                dimCopy.put(chunkEntry.getKey(), List.copyOf(chunkEntry.getValue()));
             }
-            result.put(dimEntry.getKey(), dimCopy);
+            result.put(dimEntry.getKey(), Map.copyOf(dimCopy));
         }
-        return result;
+        return Map.copyOf(result);
     }
 
-    /** Looks up entities in a pre-fetched per-dimension entity map (for use inside Exporter). */
-    public static List<CompoundTag> getEntitiesForChunk(
-            Map<ChunkPos, List<CompoundTag>> dimEntities, ChunkPos pos) {
-        if (dimEntities == null) return List.of();
-        List<CompoundTag> list = dimEntities.get(pos);
-        return (list != null) ? list : List.of();
+    /** Drops one-shot empty markers after their exact entity snapshot is durable. */
+    public static void discardDurableEmptyMarkers(
+            Map<ResourceKey<Level>, Map<ChunkPos, List<CompoundTag>>> durableSnapshot) {
+        for (Map.Entry<ResourceKey<Level>, Map<ChunkPos, List<CompoundTag>>> dimEntry
+                : durableSnapshot.entrySet()) {
+            Map<ChunkPos, List<CompoundTag>> live = dimChunkEntities.get(dimEntry.getKey());
+            if (live == null) continue;
+            for (Map.Entry<ChunkPos, List<CompoundTag>> entry : dimEntry.getValue().entrySet()) {
+                if (entry.getValue().isEmpty()) {
+                    List<CompoundTag> current = live.get(entry.getKey());
+                    if (current != null && current.isEmpty()) {
+                        live.remove(entry.getKey(), current);
+                    }
+                }
+            }
+            if (live.isEmpty()) dimChunkEntities.remove(dimEntry.getKey(), live);
+        }
     }
 
     public static void clear() {
@@ -158,9 +183,12 @@ public class EntityTracker {
         try {
             NbtWriteView view = new NbtWriteView();
             entity.saveWithoutId(view);
-            return view.getCompound();
+            CompoundTag nbt = view.getCompound();
+            nbt.putString("id", BuiltInRegistries.ENTITY_TYPE.getKey(entity.getType()).toString());
+            return nbt;
         } catch (Exception e) {
-            WMLogger.warn("Failed to serialize entity " + entity.getType() + ": " + e.getMessage());
+            WMLogger.warnRateLimited("entity-single-serialize", 30_000L,
+                    "Failed to serialize entity type " + entity.getType() + ": " + e.getMessage());
             return null;
         }
     }

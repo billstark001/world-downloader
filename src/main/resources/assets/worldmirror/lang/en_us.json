@@ -19,6 +19,7 @@
   "msg.worldmirror.downloadStart":  "§aWorld Mirror: Active",
   "msg.worldmirror.downloadStop":   "§cWorld Mirror: Inactive",
   "msg.worldmirror.exportDone":     "World exported successfully.",
+  "msg.worldmirror.exportFailed":   "World export failed; see latest.log for details.",
   "msg.worldmirror.exportBusy":     "Export already in progress — please wait.",
   "msg.worldmirror.noChunks":       "No chunks cached — walk around to load chunks first.",
   "msg.worldmirror.cleared":        "Cleared chunk/entity/container cache (disk unchanged).",
@@ -155,12 +156,10 @@
 
   "text.autoconfig.worldmirror.option.syncIntervalSeconds": "Sync Interval (seconds)",
   "text.autoconfig.worldmirror.option.syncIntervalSeconds.@Tooltip": "How often (in seconds) the periodic sync fires while downloading is active.",
-
-  "text.autoconfig.worldmirror.option.logLevel": "Log Level",
-  "text.autoconfig.worldmirror.option.logLevel.@Tooltip": "Verbosity of the mod's log output.",
-  "text.autoconfig.worldmirror.option.logLevel.debug":   "Debug",
-  "text.autoconfig.worldmirror.option.logLevel.info":    "Info",
-  "text.autoconfig.worldmirror.option.logLevel.warning": "Warning",
+  "text.autoconfig.worldmirror.option.pipelineMode": "Download Pipeline",
+  "text.autoconfig.worldmirror.option.pipelineMode.@Tooltip": "Applied the next time downloading starts. Stable Periodic is the hardened default; Experimental Adaptive reacts to changes with bounded latency.",
+  "text.autoconfig.worldmirror.option.pipelineMode.stable_periodic": "Stable Periodic",
+  "text.autoconfig.worldmirror.option.pipelineMode.experimental_adaptive": "Experimental Adaptive",
 
   "text.autoconfig.worldmirror.option.defaultConflictStrategy": "Conflict Strategy",
   "text.autoconfig.worldmirror.option.defaultConflictStrategy.@Tooltip": "How to handle conflicts when a local chunk already exists.\nOVERWRITE: Replace local chunk with server version.\nIGNORE: Keep local chunk.\nMANUAL: Queue for manual decision (falls back to Ignore).",
@@ -181,6 +180,20 @@
 
   "text.autoconfig.worldmirror.option.cache.invalidateAfterExport": "Invalidate After Export",
   "text.autoconfig.worldmirror.option.cache.invalidateAfterExport.@Tooltip": "If enabled, a chunk is removed from memory immediately after being written to disk.",
+
+  "text.autoconfig.worldmirror.option.performance": "Performance",
+  "text.autoconfig.worldmirror.option.performance.captureBudgetMicros": "Capture Budget (µs/tick)",
+  "text.autoconfig.worldmirror.option.performance.captureBudgetMicros.@Tooltip": "Maximum main-thread time normally spent serializing queued chunks each tick.",
+  "text.autoconfig.worldmirror.option.performance.adaptiveDirtyHighWatermark": "Adaptive Dirty High Watermark",
+  "text.autoconfig.worldmirror.option.performance.adaptiveDirtyHighWatermark.@Tooltip": "Experimental mode starts a write immediately when this many dirty chunks are waiting.",
+  "text.autoconfig.worldmirror.option.performance.adaptiveMaxLatencySeconds": "Adaptive Max Latency (seconds)",
+  "text.autoconfig.worldmirror.option.performance.adaptiveMaxLatencySeconds.@Tooltip": "Longest experimental mode waits before making dirty revisions durable.",
+  "text.autoconfig.worldmirror.option.performance.maxPendingCaptureHints": "Max Capture Hints",
+  "text.autoconfig.worldmirror.option.performance.maxPendingCaptureHints.@Tooltip": "Bound on coalesced event hints waiting for main-thread capture. Unloading chunks still receive a final capture.",
+  "text.autoconfig.worldmirror.option.performance.diagnosticPerformanceLogging": "Performance Diagnostic Logging",
+  "text.autoconfig.worldmirror.option.performance.diagnosticPerformanceLogging.@Tooltip": "Every 30 seconds, log pipeline, heap and timing counters plus unusually slow region writes. Leave off normally.",
+  "text.autoconfig.worldmirror.option.performance.slowRegionMillis": "Slow Region Threshold (ms)",
+  "text.autoconfig.worldmirror.option.performance.slowRegionMillis.@Tooltip": "With performance diagnostics enabled, report region stages slower than this threshold.",
 
   "text.autoconfig.worldmirror.option.chunkMap": "Chunk Map",
 

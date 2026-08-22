@@ -7,11 +7,15 @@ import io.github.ensgijs.nbt.tag.CompoundTag;
 import io.github.billstark001.worldmirror.io.ChunkExporter;
 import io.github.billstark001.worldmirror.io.McaWriteSupport;
 import io.github.billstark001.worldmirror.util.WMLogger;
+import net.minecraft.nbt.NbtIo;
 import net.minecraft.resources.Identifier;
 import net.minecraft.resources.ResourceKey;
 import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.level.Level;
+import net.minecraft.world.level.chunk.storage.RegionFile;
+import net.minecraft.world.level.chunk.storage.RegionStorageInfo;
 
+import java.io.DataOutputStream;
 import java.io.File;
 import java.io.IOException;
 import java.nio.file.Files;
@@ -73,8 +77,9 @@ public final class ConflictManager {
      * Saves the incoming server-side {@code chunkNbt} for {@code pos} as a conflict
      * entry in the appropriate MCA file under {@code conflict_chunks/}.
      */
-    public static void saveConflict(Path worldFolder, ChunkPos pos,
-                                    net.minecraft.nbt.CompoundTag chunkNbt, ResourceKey<Level> dimension) {
+    public static boolean saveConflict(Path worldFolder, ChunkPos pos,
+                                       net.minecraft.nbt.CompoundTag chunkNbt,
+                                       ResourceKey<Level> dimension) {
         Path conflictDir = getConflictDir(worldFolder, dimension);
         try {
             Files.createDirectories(conflictDir);
@@ -84,19 +89,21 @@ public final class ConflictManager {
                     String.format("r.%d.%d.mca", regionX, regionZ));
 
             synchronized (McaWriteSupport.lockFor(regionFile)) {
-                McaRegionFile mca = regionFile.toFile().exists()
-                        ? McaFileHelpers.readAuto(regionFile.toFile())
-                        : new McaRegionFile(regionX, regionZ);
-
-                int localX = pos.getRegionLocalX();
-                int localZ = pos.getRegionLocalZ();
-                CompoundTag tag = ChunkExporter.convertToQuerz(chunkNbt);
-                mca.setChunk(localX, localZ, new TerrainChunk(tag));
-                McaWriteSupport.writeAtomicallyLocked(mca, regionFile);
+                RegionStorageInfo storageInfo =
+                        new RegionStorageInfo("world_mirror_conflicts", dimension, "chunk");
+                try (RegionFile vanillaRegion =
+                             new RegionFile(storageInfo, regionFile, conflictDir, false)) {
+                    try (DataOutputStream output = vanillaRegion.getChunkDataOutputStream(pos)) {
+                        NbtIo.write(chunkNbt, output);
+                    }
+                    vanillaRegion.flush();
+                }
             }
+            return true;
         } catch (Exception e) {
             WMLogger.warn("ConflictManager.saveConflict failed for " + pos
                     + " [" + dimension.identifier() + "]: " + e.getMessage());
+            return false;
         }
     }
 
