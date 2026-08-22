@@ -6,11 +6,11 @@ Whether you're backing up a base, archiving a server before a wipe, or saving a 
 
 ## ✨ Key Features
 
-* **Periodic Background Syncing:** Exports cached data on a configurable timer (default every 30 seconds). Region-file I/O runs on a worker thread, while pre-export chunk capture is spread across client ticks.
+* **Stable + Experimental Pipelines:** Hardened periodic sync remains the default. An opt-in adaptive pipeline reacts to coalesced changes with bounded latency. Both serialize under a per-tick main-thread budget and write one region at a time on a worker.
 * **Timestamp- and Source-Aware Updates:** Records per-chunk successful write times and source priorities in SQLite, skipping older snapshots and protecting chunks owned by higher-priority third-party sources.
 * **Comprehensive Capture:**
     * **Multi-Dimension:** Writes the Overworld, Nether, End, and observed custom dimensions to the save layout required by each supported Minecraft version. Server datapacks or dimension definitions that are never sent to the client cannot be reconstructed.
-    * **Entities:** Snapshots client-visible mobs, animals, dropped items, armor stands, paintings, item frames, and vehicles on a best-effort basis. See the [0.3.0 entity persistence limitation](https://github.com/billstark001/world-mirror/issues/8).
+    * **Entities:** Snapshots client-visible mobs, animals, dropped items, armor stands, paintings, item frames, and vehicles with type IDs. Moves and despawns are reconciled while their previous chunks remain loaded.
     * **Containers:** Intercepts inventory packets. Just open a chest, barrel, hopper, or furnace while the mod is active, and its contents will be saved to your mirrored world. Previously captured container items are preserved when later chunk snapshots are empty.
     * **Block Entities:** Persists sign text, banner patterns, player heads, beacon effects, and lectern books.
 * **Fast Built-in Chunk Map:** Press **`M`** directly, or use **`I`** → Conflicts → **Open Chunk Map**, to open a draggable and zoomable view of the current dimension. Asynchronous viewport queries, low-zoom aggregation, coalesced fills, and merged boundaries keep large views responsive. Green-to-blue colors show update age, orange marks third-party sources, and red marks unresolved conflicts.
@@ -28,12 +28,22 @@ Whether you're backing up a base, archiving a server before a wipe, or saving a 
 4. When you're done, press **`O`** for a final export, then press **`P`** to stop. Automatic export on stop is configurable but disabled by default.
 5. **Play offline:** Your world is saved in `<.minecraft>/downloaded_worlds/` by default. *(Tip: Change the save location to your `Saves Folder` in the settings to play your mirrored worlds instantly from the singleplayer menu!)*
 
+World Mirror only captures while the action bar says the session is active. Pressing **O**
+does not start a session; it only flushes data already captured (plus the optional small
+manual pre-capture). The default `downloaded_worlds` folder is not Minecraft's world list.
+Choose **Saves Folder** before downloading if that is where you expect the mirror to appear.
+
 *Need to clear the in-memory capture cache? Press **`L`**. This does not delete mirror files already written to disk.*
 *Open the status screen at any time with **`I`**.*
 
 ## ⚙️ Configuration & Conflicts
 
-Press **`I`**, open the **Settings** tab, and select **Global Settings** to configure save location, sync interval, cache policy, lifecycle behavior, logging, and map rendering. Optional **Mod Menu** provides another title-screen entry to the same Cloth Config screen.
+Press **`I`**, open the **Settings** tab, and select **Global Settings** to configure save location, stable/experimental pipeline, sync and capture budgets, cache policy, lifecycle behavior, logging, and map rendering. Pipeline changes apply on the next download activation. Optional **Mod Menu** provides another title-screen entry to the same Cloth Config screen.
+
+For a reproducible performance report, temporarily enable **Performance Diagnostic
+Logging**, reproduce the problem for at least 30 seconds, and attach `latest.log` plus
+`worldmirror.json`. Low-frequency `[perf]` lines identify capture backlog, write latency,
+slow regions, failures, and heap pressure without per-chunk log spam.
 
 You can handle **Chunk Conflicts** (when a chunk already exists on your local disk) globally or per-world using three strategies:
 
@@ -53,4 +63,4 @@ You can handle **Chunk Conflicts** (when a chunk already exists on your local di
 
 ---
 
-> **Capture limits:** A client-side mod can only save data the server sends to it. Open containers to capture their contents; server-only entity state, structures, datapack definitions, and discarded light sections may be absent. Current tracked limitations include [void-world climate metadata](https://github.com/billstark001/world-mirror/issues/5), [entity persistence](https://github.com/billstark001/world-mirror/issues/8), and [light-only updates](https://github.com/billstark001/world-mirror/issues/9).
+> **Capture limits:** A client-side mod can only save data the server sends to it. Open containers to capture their contents; server-only entity state, structures, and datapack definitions may be absent. Entities in unloaded chunks retain their last client-known state until observed loaded again.

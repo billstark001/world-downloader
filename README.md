@@ -1,6 +1,6 @@
 # World Mirror
 
-**Version:** 0.3.0 · **Minecraft:** 1.21.11, 26.1.2, 26.2 · **Loader:** Fabric
+**Version:** 0.4.0 · **Minecraft:** 1.21.11, 26.1.2, 26.2 · **Loader:** Fabric
 
 A client-side Fabric mod that mirrors the world you are playing on a multiplayer server —
 or even a singleplayer world — into a standard local save. As you explore, the mod captures
@@ -15,10 +15,10 @@ in Minecraft's singleplayer world list.
 | Feature | Description |
 |---------|-------------|
 | **Persistent download session** | Press **P** to start or stop a download session. Chunks received from the server are recorded automatically while the session is active. |
-| **Periodic background sync** | The mod exports on a configurable timer (default 30 s). Live-world capture is spread across client ticks, while region-file I/O runs on a background thread to reduce gameplay stalls. |
+| **Stable and adaptive pipelines** | Hardened periodic sync remains the default. An opt-in adaptive mode reacts to coalesced chunk changes with bounded durability latency. Both use main-thread capture budgets and low-memory, one-region-at-a-time background writes. |
 | **Timestamp- and source-aware writes** | SQLite records successful per-chunk write times and source priorities. Older snapshots and updates outranked by a third-party source are skipped. |
 | **Multi-dimension support** | Overworld, Nether, End, and custom dimensions are exported using the save layout required by the selected Minecraft version. |
-| **Entity capture** | Client-visible non-player entities are snapshotted into per-dimension entity region files on a best-effort basis. Server-only fields and the [known 0.3.0 entity reconciliation limitations](https://github.com/billstark001/world-mirror/issues/8) are not hidden. |
+| **Entity capture** | Client-visible non-player entities are snapshotted with their type IDs into per-dimension entity region files. Moves and despawns are reconciled while the affected chunks remain loaded; server-only state is necessarily unavailable. |
 | **Container tracking** | The mod intercepts inventory packets when you open a chest, barrel, hopper, furnace, or any other container and saves the item stacks. They are merged into the block entity NBT on export. Double chests are handled correctly (each half is saved to its own position). |
 | **Block entity data** | Signs (text), beacons (effects), banners (patterns), player heads (owner), lecterns (stored book), and all other block entities whose data the server sends to the client are persisted through Minecraft's chunk serialization path. |
 | **World–mirror mapping** | Every detected server address or singleplayer world name is persistently mapped to a sanitised local folder name in `config/worldmirror/mirrors.json`. Different aliases for the same server are currently separate source IDs. |
@@ -28,7 +28,7 @@ in Minecraft's singleplayer world list.
 | **Xaero's World Map Overlay** | Optionally render the same status layer on Xaero's fullscreen map through Xaero World Map Bridge. Xaero's World Map and the bridge are both required for this integration. |
 | **Export Nearby Region** | Snapshot all loaded chunks within a configurable radius (1–50 chunks) into a fresh singleplayer save with the spawn point set to your current position. |
 | **Native status UI** | Press **I** to open the native Minecraft status screen. It retains download/export status, mirror information, per-world settings, safe mirror relocation, and conflict actions without a LibGui dependency. |
-| **In-game logging** | Important events are echoed to the player's chat at a configurable level (Debug / Info / Warning). |
+| **Useful, quiet diagnostics** | Operational detail stays in `latest.log`; chat is reserved for translated action results. An opt-in performance switch adds low-frequency pipeline/heap/slow-region telemetry without per-chunk spam. |
 | **Cloth Config settings** | Global settings are available from the status screen. Installing Mod Menu also exposes the same screen from the title-screen mod list. |
 | **Internationalisation** | UI strings are translated into English (`en_us`), Simplified Chinese (`zh_cn`), Traditional Chinese (`zh_tw`), and Japanese (`ja_jp`). |
 
@@ -88,12 +88,18 @@ is also available from *Mod Menu → World Mirror → Settings*.
 |---------|--------|---------|
 | Save location | `Downloaded Folder` / `Saves Folder` | `Downloaded Folder` |
 | Sync interval | 5–600 s | 30 s |
-| In-game log level | `Debug` / `Info` / `Warning` | `Info` |
+| Download pipeline | `Stable Periodic` / `Experimental Adaptive` | `Stable Periodic` |
 | Conflict strategy | `Overwrite` / `Ignore` / `Manual` | `Overwrite` |
 | Maximum cached chunks | 0–12800; 0 disables the limit | 0 |
 | Maximum cache distance | 0–64 chunks; 0 disables the limit | 32 |
 | Maximum cache age | 0–14400 s; 0 disables the limit | 1800 s |
 | Invalidate cache after export | `true` / `false` | `false` |
+| Main-thread capture budget | 250–5000 µs/tick | 1500 µs/tick |
+| Adaptive dirty high watermark | 32–8192 chunks | 512 chunks |
+| Adaptive maximum durability latency | 1–60 s | 5 s |
+| Maximum pending capture hints | 512–32768 | 8192 |
+| Performance diagnostic logging | `true` / `false` | `false` |
+| Slow-region diagnostic threshold | 50–10000 ms | 500 ms |
 | Sparse-map cell threshold | 1–16 px | 1 px |
 | Chunk-map background | `Black` / `Transparent` | `Black` |
 | Xaero overlay enabled | `true` / `false` | `true` |
@@ -183,12 +189,11 @@ client and writes their client-known state to per-dimension `entities/r.X.Z.mca`
 This covers common mobs, vehicles, paintings, item frames, armour stands, and dropped
 items on a best-effort basis.
 
-Entity output in 0.3.0 is not a server-authoritative backup. Fields never sent to the
+Entity output is not a server-authoritative backup. Fields never sent to the
 client—such as AI internals and unopened villager trades—cannot be reconstructed.
-Type-ID persistence and move/despawn reconciliation also have a
-[known 0.3.0 correctness issue](https://github.com/billstark001/world-mirror/issues/8).
-Do not rely on the mirror as the sole backup of important entities until that issue is
-resolved.
+World Mirror writes type IDs and clears moved/despawned entities when their previous
+chunks are still loaded. When a chunk unloads, its last known entities are preserved
+because a client-side mod cannot distinguish every unload from a server-side removal.
 
 ---
 
@@ -212,17 +217,17 @@ as `container.chest` are not persisted as custom names.
 
 ---
 
-## Capture Limits in 0.3.0
+## Capture Limits in 0.4.0
 
 World Mirror is client-side and cannot reconstruct data the server never sends. In
 particular:
 
 - unopened container inventories, server-only entity fields, structure metadata, and
   server datapack definitions may be absent;
-- entity type IDs and move/despawn reconciliation have a tracked
-  [correctness issue](https://github.com/billstark001/world-mirror/issues/8);
-- light sections present in the initial chunk packet are saved, but later light-only
-  updates are not yet tracked reliably ([issue #9](https://github.com/billstark001/world-mirror/issues/9));
+- entities in unloaded chunks retain their last client-known state until that chunk is
+  observed loaded again;
+- light-only, block, block-entity, biome, container, load, and unload changes are
+  coalesced into bounded capture work; data the server never sends is still unavailable;
 - uncaptured chunks intentionally remain void, while the generated save's climate and
   dimension metadata can differ from the source world
   ([issue #5](https://github.com/billstark001/world-mirror/issues/5)).
@@ -241,7 +246,7 @@ Choose the World Mirror JAR that exactly matches your Minecraft version:
 
 1. Install [Fabric Loader](https://fabricmc.net/use/) 0.19.3 or newer.
 2. Install the matching [Fabric API](https://modrinth.com/mod/fabric-api).
-3. Put the matching World Mirror 0.3.0 JAR in `mods/`.
+3. Put the matching World Mirror 0.4.0 JAR in `mods/`.
 4. *(Optional)* Install [Mod Menu](https://modrinth.com/mod/modmenu) for a title-screen settings entry.
 5. *(Optional)* For the Xaero overlay, install both
    [Xaero's World Map](https://modrinth.com/mod/xaeros-world-map) 1.40.x–1.44.x and the
@@ -253,6 +258,43 @@ and does not need to be installed.
 ---
 
 ## Typical Usage
+
+World Mirror does nothing until a download session is active unless a lifecycle setting
+explicitly starts one. The normal workflow is:
+
+1. Join the source world and press **P once**. Confirm that the action bar says World
+   Mirror is active.
+2. Explore the areas you want to retain. Open each container whose inventory matters;
+   unopened inventories are not sent to the client.
+3. Leave the session active while exploring. Stable Periodic writes changed chunks on
+   the configured interval; pressing **O** is optional and requests an immediate final
+   pass. Automatic periodic passes do not rescan a 17×17 area.
+4. Press **P** to stop. If “Export cached chunks on stop” is disabled (the default), use
+   **O before stopping** when you want a final pass immediately.
+5. The default output is `<.minecraft>/downloaded_worlds/`, which Minecraft does not list
+   as a singleplayer save. Select **Saves Folder** before downloading if it should appear
+   directly in the world list.
+
+Changing the download pipeline while a session is active is intentionally safe: the new
+choice applies the next time the session starts, so two writers can never operate on the
+same mirror concurrently.
+
+### Collecting a performance log
+
+If stutter returns, enable **Performance → Performance Diagnostic Logging**, reproduce it
+for at least 30 seconds, then attach `latest.log` and the World Mirror config. Lines marked
+`[perf]` report the active pipeline, cache/dirty counts, capture queue age, coalesced and
+dropped hints, main-thread capture time, export duration, slow region files, failures, and
+heap usage. Disable the switch afterward; it is designed to be low-frequency but is not
+needed during normal play.
+
+Distant Horizons' “slow GC” warning is selected from the JVM garbage collector name and
+does not by itself attribute a pause to World Mirror. World Mirror's `[perf]` line includes
+`gcCollectors`, `gcCountDelta`, and `gcTimeMsDelta`; compare those deltas with
+`lastCaptureUs`, `lastExportMs`, and slow-region lines to tell collector pressure from a
+capture or disk bottleneck. The 0.4 writer removes World Mirror's previous whole-cache NBT
+copy/conversion spike, which can reduce GC pressure without suppressing DH's generic JVM
+warning.
 
 1. Join a multiplayer server.
 2. Press **P** — the action bar shows *World Mirror: Active*.
