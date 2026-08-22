@@ -7,36 +7,38 @@ import java.util.Objects;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
 
-/**
- * Version-independent logging implementation. Minecraft-facing message delivery
- * remains in the per-version {@link WMLogger} adapter.
- */
-final class WMLogBackend {
+/** Central logging API for World Mirror. Player messages use {@code WMPlayerMessages}. */
+public final class WMLogger {
 
     private static final Logger LOGGER = LoggerFactory.getLogger("WorldMirror");
     private static final ConcurrentHashMap<String, RateLimitState> RATE_LIMITS = new ConcurrentHashMap<>();
 
     private record RateLimitState(AtomicLong nextLogMs, AtomicLong suppressed) { }
 
-    private WMLogBackend() { }
+    private WMLogger() { }
 
-    static void debug(String message) {
+    public static void debug(String message) {
         LOGGER.debug(message);
     }
 
-    static void info(String message) {
+    public static void info(String message) {
         LOGGER.info(message);
     }
 
-    static void warn(String message) {
+    public static void warn(String message) {
         LOGGER.warn(message);
     }
 
-    static void warn(String message, Throwable error) {
+    public static void warn(String message, Throwable error) {
         LOGGER.warn(message, error);
     }
 
-    static void warnRateLimited(String key, long intervalMs, String message, Throwable error) {
+    public static void warnRateLimited(String key, long intervalMs, String message) {
+        warnRateLimited(key, intervalMs, message, null);
+    }
+
+    public static void warnRateLimited(
+            String key, long intervalMs, String message, Throwable error) {
         Objects.requireNonNull(key, "key");
         long now = System.currentTimeMillis();
         long nextInterval = Math.max(1L, intervalMs);

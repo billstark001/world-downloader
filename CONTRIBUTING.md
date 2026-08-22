@@ -2,9 +2,9 @@
 
 ## Logging policy
 
-World Mirror has one operational logging API: `WMLogger`. Its version-specific
-classes adapt Minecraft's player-message methods; all SLF4J output and rate
-limiting belongs in the shared `WMLogBackend`. Do not add another logger,
+World Mirror has one operational logging API: the shared `WMLogger`. Minecraft's
+version-specific player-message methods live separately in `WMPlayerMessages`.
+Do not add another logger,
 `System.out`, `System.err`, or `printStackTrace` in World Mirror code.
 
 Choose the lowest level that still makes the event actionable:
@@ -39,7 +39,8 @@ when they help identify the failed operation.
 ### Player messages
 
 Logs and player messages are separate interfaces. Operational logs never enter
-chat automatically. Use `sendSystemMessage` or `sendOverlayMessage` only at an
+chat automatically. Use `WMPlayerMessages.sendSystemMessage` or
+`WMPlayerMessages.sendOverlayMessage` only at an
 explicit command or lifecycle boundary, and only with a translated component.
 Keep the message short; detailed exception data belongs in `latest.log`.
 

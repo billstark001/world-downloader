@@ -11,6 +11,7 @@ import io.github.billstark001.worldmirror.io.ChunkSerializer;
 import io.github.billstark001.worldmirror.core.ContainerTracker;
 import io.github.billstark001.worldmirror.core.EntityTracker;
 import io.github.billstark001.worldmirror.util.WMLogger;
+import io.github.billstark001.worldmirror.util.WMPlayerMessages;
 import io.github.billstark001.worldmirror.io.WorldStructureCreator;
 import io.github.billstark001.worldmirror.ui.ClientDialogs;
 import io.github.billstark001.worldmirror.ui.MirrorPrompt;
@@ -255,7 +256,7 @@ public final class DownloadManager {
             currentActive.set(false);
             clearPendingCaptureState();
             finalizeCaptureOnStop(client, "manual-toggle");
-            WMLogger.sendOverlayMessage(client.player,
+            WMPlayerMessages.sendOverlayMessage(client.player,
                     Component.translatable("msg.worldmirror.downloadStop"));
             WMLogger.debug("Download deactivated");
             return;
@@ -275,13 +276,13 @@ public final class DownloadManager {
                 && client.level != null && client.player != null;
         if (ChunkListener.isEmpty() && !canPreCapture) {
             Component msg = Component.translatable("msg.worldmirror.noChunks");
-            WMLogger.sendSystemMessage(client.player, msg);
+            WMPlayerMessages.sendSystemMessage(client.player, msg);
             WMLogger.debug("Manual export ignored because no chunks are cached.");
             return;
         }
         if (exportInProgress.get()) {
             Component msg = Component.translatable("msg.worldmirror.exportBusy");
-            WMLogger.sendSystemMessage(client.player, msg);
+            WMPlayerMessages.sendSystemMessage(client.player, msg);
             deferExport(true, true, null, null, ContainerTracker.snapshotSavedData());
             WMLogger.debug("Export already in progress; coalesced another export request.");
             return;
@@ -299,7 +300,7 @@ public final class DownloadManager {
         EntityTracker.clear();
         ContainerTracker.clear();
         Component msg = Component.translatable("msg.worldmirror.cleared");
-        WMLogger.sendSystemMessage(client.player, msg);
+        WMPlayerMessages.sendSystemMessage(client.player, msg);
         WMLogger.debug("Cleared: " + chunks + " chunks, " + entities
                 + " entities, " + containers + " containers.");
     }
@@ -447,7 +448,7 @@ public final class DownloadManager {
         finalizeCaptureOnStop(client, eventName);
 
         Component msg = Component.translatable("msg.worldmirror.downloadStop");
-        WMLogger.sendOverlayMessage(client.player, msg);
+        WMPlayerMessages.sendOverlayMessage(client.player, msg);
         WMLogger.debug("Download deactivated lifecycleEvent=" + eventName);
     }
 
@@ -690,7 +691,7 @@ public final class DownloadManager {
         lastPeriodicSyncMs = System.currentTimeMillis();
         lastCacheEvictionMs = lastPeriodicSyncMs;
         if (client.level != null) captureLoadedChunksAsync(client);
-        WMLogger.sendOverlayMessage(client.player, Component.translatable("msg.worldmirror.downloadStart"));
+        WMPlayerMessages.sendOverlayMessage(client.player, Component.translatable("msg.worldmirror.downloadStart"));
         WMLogger.info("Download activated with pipeline=" + activePipelineMode
                 + (reason == null ? "" : " by " + reason));
     }
@@ -1003,7 +1004,7 @@ public final class DownloadManager {
                 if (notify && passSuccessful) {
                     Minecraft.getInstance().execute(() -> {
                         Minecraft mc = Minecraft.getInstance();
-                        WMLogger.sendSystemMessage(
+                        WMPlayerMessages.sendSystemMessage(
                                 mc.player, Component.translatable("msg.worldmirror.exportDone"));
                     });
                 } else if (notify) {
@@ -1049,7 +1050,7 @@ public final class DownloadManager {
         if (!notify) return;
         Minecraft.getInstance().execute(() -> {
             Minecraft mc = Minecraft.getInstance();
-            WMLogger.sendSystemMessage(mc.player,
+            WMPlayerMessages.sendSystemMessage(mc.player,
                     Component.translatable("msg.worldmirror.exportFailed")
                             .withStyle(ChatFormatting.RED));
         });
@@ -1320,7 +1321,7 @@ public final class DownloadManager {
                                               NearbyExportLineage.Choice lineageChoice) {
         ClientLevel world = client.level;
         if (world == null || client.player == null) {
-            WMLogger.sendSystemMessage(client.player,
+            WMPlayerMessages.sendSystemMessage(client.player,
                     Component.translatable("msg.worldmirror.nearbyNoWorld").withStyle(ChatFormatting.RED));
             return;
         }
@@ -1351,7 +1352,7 @@ public final class DownloadManager {
         }
 
         if (nearbyChunks.isEmpty()) {
-            WMLogger.sendSystemMessage(client.player,
+            WMPlayerMessages.sendSystemMessage(client.player,
                     Component.translatable("msg.worldmirror.nearbyNoChunks", radiusChunks)
                             .withStyle(ChatFormatting.RED));
             return;
@@ -1423,12 +1424,12 @@ public final class DownloadManager {
                         io.github.billstark001.worldmirror.io.MirrorWorldgenAssets.ASSET_REVISION);
                 metadata.markSyncComplete(finalOut);
                 WMLogger.info("Nearby export complete: " + finalOut.toAbsolutePath());
-                client.execute(() -> WMLogger.sendSystemMessage(client.player,
+                client.execute(() -> WMPlayerMessages.sendSystemMessage(client.player,
                         Component.translatable("msg.worldmirror.nearbyDone", finalOut.getFileName())
                                 .withStyle(ChatFormatting.GREEN)));
             } catch (Exception e) {
                 WMLogger.warn("Nearby export failed output=" + finalOut, e);
-                client.execute(() -> WMLogger.sendSystemMessage(client.player,
+                client.execute(() -> WMPlayerMessages.sendSystemMessage(client.player,
                         Component.translatable("msg.worldmirror.nearbyFailed")
                                 .withStyle(ChatFormatting.RED)));
             }
