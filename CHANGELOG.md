@@ -16,6 +16,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- Stable periodic and adaptive scheduling now implement one `DownloadPipeline` contract,
+  keeping both strategies parallel and making future strategies independent of lifecycle
+  orchestration.
+- Split the download controller into dedicated main-thread capture, background export,
+  output-path, and nearby-export owners; `DownloadManager` remains the lifecycle/command
+  facade.
+- Moved the shared `WorldStructureCreator` and `StatusScreen` behavior into root source,
+  leaving thin per-target adapters for Minecraft level-data, rendering, and screen APIs.
 - Region output now uses Minecraft's streaming `RegionFile` API and materializes one chunk at a time instead of deep-copying and converting the whole cache through temporary byte arrays.
 - Automatic exports no longer run the nearby 17×17 pre-export scan; the optional scan is reserved for explicit manual export.
 - Entity regions are also streamed one region at a time instead of retaining every parsed entity MCA file for the pass.
@@ -25,6 +33,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- Clearing or switching a source world now clears chunk, entity, and container live state,
+  while in-flight dirty snapshots retain their own lighting overlays until export finishes.
+- Bulk conflict overwrite deletes a conflict MCA only after every applicable chunk was
+  written successfully; failed world writes retain the conflict file for retry.
 - Exact monotonic revisions prevent an update arriving during an older write from being acknowledged or invalidated accidentally.
 - Dirty chunks can no longer be evicted before both region flush and SQLite durability-index commit; failed stages remain cached for retry.
 - SQLite records each captured timestamp and refuses to regress a newer durability record.

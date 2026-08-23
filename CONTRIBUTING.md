@@ -1,5 +1,73 @@
 # Contributing to World Mirror
 
+## Source layout and boundaries
+
+Root `src/main/java` is the home of version-neutral behavior. A class must not be
+copied wholesale into every `versions/shared-mc-<version>` tree merely because a
+Minecraft method name or rendering type changed. Keep the business class in root
+source and add a small package-local API adapter per target, following
+`WorldStructureCreator` + `WorldStructureApi`, `StatusScreen` + `StatusScreenApi`,
+and `WMPlayerMessages`.
+
+Version adapters translate Minecraft types, method names, data encodings, or save
+layouts. They must not acquire lifecycle policy, persistence policy, or duplicated
+UI behavior. Do not introduce a cross-version `shared-mc-26` layer until the Gradle
+source sets explicitly consume it; identical thin 26.1.2/26.2 adapters are acceptable
+while their upstream APIs remain separate compatibility targets.
+
+The download package follows the same ownership rule:
+
+- `DownloadManager` is the public lifecycle and command facade.
+- `DownloadPipeline` implementations decide when an export is due. New strategies
+  implement that contract alongside the existing stable and adaptive strategies.
+- `DownloadCaptureQueue` owns main-thread serialization, hint coalescing, queue limits,
+  and capture diagnostics.
+- `DownloadExportCoordinator` owns request serialization, snapshots, durability commits,
+  retry acknowledgment, and the export worker.
+- `MirrorMapping` owns output-path selection, claiming, and per-world path settings.
+
+Avoid adding queue locks, region transactions, strategy-specific state, or path-claiming
+logic back to the manager. Prefer extending an existing owner over adding a one-method
+utility file, but do not merge unrelated state merely to reduce the file count.
+
+Captured world state is scoped to one source world. Join, server-world, and dimension
+transitions must not allow cached chunks, entities, containers, or lighting overlays to
+leak into another source. Background work receives immutable snapshots that remain valid
+after live caches are cleared. A region write is durable only after file validation and
+the SQLite index commit; failed conflict application must retain its conflict file.
+
+## Documentation and release policy
+
+Documentation changes are part of a feature or compatibility change, not a later release
+chore. Before merging, compare all user-visible behavior against `README.md`, the
+self-contained player description in `README_MODRINTH.md`, the current release section in
+`CHANGELOG.md`, and `DATABASE.md` when persistence semantics changed.
+
+`README_MODRINTH.md` is written for players who may not know World Mirror's internals.
+Lead with the required action and observable result. In particular, always keep these
+points explicit:
+
+- pressing **P** starts/stops capture, while **O** exports already captured data;
+- the default `downloaded_worlds` directory is not shown in Minecraft's world list;
+- containers must be opened and client-invisible server data cannot be recovered;
+- every download must exactly match its Minecraft target and required Java version.
+
+Avoid implementation terms such as revision acknowledgment, queue hysteresis, immutable
+NBT materialization, or durability indexes in the first-use instructions. Put technical
+detail in the repository README and link-oriented contributor docs instead.
+
+The supported-target metadata in root `build.gradle` is the build source of truth. Adding,
+removing, or releasing a target also requires checking `settings.gradle`, its
+`versions/fabric-<minecraft>` and `versions/shared-mc-<minecraft>` directories, CI/release
+workflows, both READMEs, and the current changelog. CI and release jobs must call
+`buildAll` and collect artifacts from `versions/fabric-*/build/libs`; the old root
+`build/libs` path is not a multi-target distribution directory.
+
+Before a release, run all target tests, `buildAll`, and one client startup smoke test per
+target. The shared `run/mods` directory may contain only one enabled Minecraft-version
+build of Xaero's World Map at a time. A core smoke test may disable the external bridge and
+map by mod ID, but report that limitation instead of presenting it as an integration test.
+
 ## Logging policy
 
 World Mirror has one operational logging API: the shared `WMLogger`. Minecraft's

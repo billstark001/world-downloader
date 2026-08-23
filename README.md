@@ -172,9 +172,16 @@ required by that version.
 | Field | Description |
 |-------|-------------|
 | `modVersion` | Mod version that created / last updated the mirror |
+| `format` / `metadataSchema` | Stable World Mirror marker and metadata-document schema |
+| `mirrorKind` | `synchronized` mirror or standalone `nearby_export` |
+| `mirrorId` | Stable mirror identity that survives folder moves and copies |
+| `parentMirrorId` | Optional identity of the mirror from which a nearby export was created |
 | `sourceType` | `singleplayer` or `server` |
-| `sourceId` | `local:<level-name>` or `server:<address>` in 0.3.0 |
+| `sourceId` | `local:<level-name>` or `server:<address>` |
 | `lastSyncTime` | Unix-millisecond timestamp of the most recent sync |
+| `worldgenSchema` | Semantic schema of the generated mirror dimensions |
+| `worldgenAssetRevision` / `worldgenAssetDataVersion` | Embedded data-pack revision and Minecraft data version |
+| `legacyVoidChunkCleanupRevision` | Completion marker for the backed-up legacy void-chunk cleanup |
 
 Per-chunk dirty-check metadata is stored in `data/world_mirror.sqlite`. Older
 `worldmirror_meta.json` files with a legacy `chunkUpdateTimes` field are migrated
@@ -291,21 +298,10 @@ needed during normal play.
 Distant Horizons' “slow GC” warning is selected from the JVM garbage collector name and
 does not by itself attribute a pause to World Mirror. World Mirror's `[perf]` line includes
 `gcCollectors`, `gcCountDelta`, and `gcTimeMsDelta`; compare those deltas with
-`lastCaptureUs`, `lastExportMs`, and slow-region lines to tell collector pressure from a
-capture or disk bottleneck. The 0.4 writer removes World Mirror's previous whole-cache NBT
+`captureTickP99Us`, `wmTickP99Us`, `lastExportMs`, and slow-region lines to tell collector
+pressure from a capture or disk bottleneck. The 0.4 writer removes World Mirror's previous whole-cache NBT
 copy/conversion spike, which can reduce GC pressure without suppressing DH's generic JVM
 warning.
-
-1. Join a multiplayer server.
-2. Press **P** — the action bar shows *World Mirror: Active*.
-3. Walk around to load terrain.  Open containers to capture their inventories.
-4. Press **I** to check sync statistics and status at any time.
-5. Press **O** for a final export, then press **P** to stop the session. Automatic export
-   on stop is available but disabled by default.
-6. The mirror is saved under `<.minecraft>/downloaded_worlds/<mirror-name>/` by default.
-   To play offline, open the world from the
-   *Saves Folder* (set save location to `Saves Folder` in settings, or copy the folder
-   manually to `<.minecraft>/saves/`).
 
 ### Quick export (no session)
 
@@ -333,7 +329,7 @@ This builds the Fabric targets for Minecraft 1.21.11, 26.1.2, and 26.2. Each
 target's artifacts are stored in its `versions/fabric-*/build/libs` directory.
 
 For a Modrinth upload, build all targets and collect only the three distributable
-JARs in the root [`build/modrinth`](build/modrinth) directory:
+JARs in the generated root `build/modrinth` directory:
 
 ```powershell
 .\scripts\build-modrinth.ps1
@@ -346,6 +342,18 @@ Use `-SkipBuild` only when the current version's three JARs have already been bu
 Gradle generates a separate IntelliJ IDEA client run configuration for every supported Minecraft target. All targets
 intentionally share the root `run/` directory, while their module, Loom launch file, and Java runtime remain
 version-specific. Minecraft 1.21.11 uses Java 21; Minecraft 26.x uses Java 25.
+
+Because `run/mods` is shared, enable only the Xaero World Map JAR that matches the client
+being launched; the helper script keeps other downloaded versions as `.jar.disabled`.
+On this multi-target branch, select the target explicitly:
+
+```powershell
+.\scripts\Get-LatestXaerosWorldMap.ps1 -MinecraftVersion 26.2
+```
+
+For a World Mirror-only startup smoke test, the external map and bridge can be excluded with
+`-Dfabric.debug.disableModIds=xaero_world_map_bridge,xaeroworldmap`. This does not replace a
+separate integration test with the matching published Xaero and bridge artifacts.
 
 Reloading the Gradle project refreshes the configurations automatically. They can also be rebuilt from a terminal:
 
@@ -367,19 +375,29 @@ When adding or removing a Minecraft target:
 
 ## Architecture Notes
 
-- All chunk data is captured on the game thread in `ChunkDataMixin` and stored in
-  `ChunkListener` (dimension-aware: `Map<ResourceKey<Level>, Map<ChunkPos, CapturedChunk>>`).
-- Container data is captured in `ContainerMixin` and stored in `ContainerTracker`.
-- Entities are snapshot-serialized on the game thread by `EntityTracker` before each export.
+- `DownloadManager` is the lifecycle/command facade. `DownloadCaptureQueue` owns bounded
+  game-thread capture and coalescing; `DownloadExportCoordinator` owns serialized background
+  durability transactions; `MirrorMapping` owns output-path selection and claiming.
+- Stable periodic and adaptive scheduling are parallel `DownloadPipeline` implementations.
+  Adding another strategy should not add a new branch-shaped scheduler to the manager.
+- `ChunkDataMixin` supplies capture hints, `DownloadCaptureQueue` performs Minecraft chunk
+  serialization on the game thread, and `ChunkListener` owns dimension-aware captured/dirty
+  state. Source transitions clear live chunk, entity, and container state; immutable dirty
+  snapshots retain their own lighting overlays until their export finishes.
+- Container data is observed in `ContainerMixin` and stored in `ContainerTracker`. Entities
+  are snapshot-serialized on the game thread by `EntityTracker` before each export.
 - Built-in and Xaero rendering share `ChunkMapView` and use asynchronous status
   snapshots, viewport-indexed lookups, low-zoom bucket aggregation, coalesced fill runs,
   and merged boundaries.
 - Xaero's World Map overlay is optional and uses Xaero World Map Bridge's public overlay API; the bridge owns Xaero-specific mixins and fallbacks.
-- The actual disk I/O runs on a background thread (`WM-Export`) to reduce gameplay
-  stalls. The game thread incrementally captures live chunks and provides immutable
-  snapshots of chunks, entities, and container overlays to the writer.
+- The actual disk I/O runs on the single `WM-Export` worker. Region validation and the
+  SQLite durability-index commit must succeed before captured revisions are acknowledged;
+  failed conflict application retains the conflict MCA for retry.
 - The dirty-check (`CapturedChunk.capturedAtMs` vs `data/world_mirror.sqlite`) ensures
   unchanged chunks are not re-written on every periodic sync.
+- Version-neutral `WorldStructureCreator` and `StatusScreen` bodies live in root `src`.
+  Per-target `WorldStructureApi`, `StatusScreenApi`, and `WMPlayerMessages` classes are thin
+  Minecraft-API translation layers under `versions/shared-mc-<version>`.
 - Region files are read and written using the bundled MIT-licensed
   [ens-gijs/NBT](https://github.com/ens-gijs/NBT) fork of
   [Querz/NBT](https://github.com/Querz/NBT).

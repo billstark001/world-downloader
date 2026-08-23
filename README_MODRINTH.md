@@ -1,66 +1,125 @@
 # World Mirror
 
-Ever wanted to take a piece of your favorite multiplayer server offline? **World Mirror** is a client-side Fabric mod that captures client-visible terrain, block entities, best-effort entity snapshots, and opened container contents, then exports them as a standard local Minecraft save.
+World Mirror is a client-side Fabric mod that saves the parts of a Minecraft world your
+client can see, then turns them into a local singleplayer save. It works on multiplayer
+servers, Realms, and singleplayer worlds; the server does not need to install anything.
 
-Whether you're backing up a base, archiving a server before a wipe, or saving a minigame map, World Mirror spreads live-world capture across client ticks and moves region-file I/O to a worker thread to reduce gameplay stalls.
+Use it to archive a build, keep a personal record of an area, or take a permitted server
+world offline. Only download worlds where you have permission to do so.
 
-## ✨ Key Features
+## Important before you start
 
-* **Stable + Experimental Pipelines:** Hardened periodic sync remains the default. An opt-in adaptive pipeline reacts to coalesced changes with bounded latency. Both serialize under a per-tick main-thread budget and write one region at a time on a worker.
-* **Timestamp- and Source-Aware Updates:** Records per-chunk successful write times and source priorities in SQLite, skipping older snapshots and protecting chunks owned by higher-priority third-party sources.
-* **Comprehensive Capture:**
-    * **Multi-Dimension:** Writes the Overworld, Nether, End, and observed custom dimensions to the save layout required by each supported Minecraft version. Server datapacks or dimension definitions that are never sent to the client cannot be reconstructed.
-    * **Entities:** Snapshots client-visible mobs, animals, dropped items, armor stands, paintings, item frames, and vehicles with type IDs. Moves and despawns are reconciled while their previous chunks remain loaded.
-    * **Containers:** Intercepts inventory packets. Just open a chest, barrel, hopper, or furnace while the mod is active, and its contents will be saved to your mirrored world. Previously captured container items are preserved when later chunk snapshots are empty.
-    * **Block Entities:** Persists sign text, banner patterns, player heads, beacon effects, and lectern books.
-* **Fast Built-in Chunk Map:** Press **`M`** directly, or use **`I`** → Conflicts → **Open Chunk Map**, to open a draggable and zoomable view of the current dimension. Asynchronous viewport queries, low-zoom aggregation, coalesced fills, and merged boundaries keep large views responsive. Green-to-blue colors show update age, orange marks third-party sources, and red marks unresolved conflicts.
-* **Optional Xaero Overlay:** Install [Xaero's World Map](https://modrinth.com/mod/xaeros-world-map) 1.40.x–1.44.x together with the matching [Xaero World Map Bridge 0.1.0](https://github.com/billstark001/xaero-world-map-bridge/releases/tag/v0.1.0) build to draw the same status layer on Xaero's fullscreen map.
-* **Visual Conflict Resolution:** When using the **Manual** conflict strategy, conflicted chunks are saved to disk in MCA format. Open the Chunk Map to review them one by one or resolve all at once from the Conflicts tab.
-* **Export Nearby Region:** Snapshot all loaded chunks within a configurable radius into a brand-new singleplayer save — ideal for archiving a specific area without touching your full mirror world.
-* **Persistent World Mapping:** Maps each detected server address or singleplayer world name to a dedicated local folder. Per-world settings can move an existing mirror between `downloaded_worlds` and `saves` after confirmation, provided downloading and exporting are stopped.
-* **International Support:** Fully translated into English, Simplified Chinese, Traditional Chinese, and Japanese.
+- Press **P** after joining the world. World Mirror does not continuously record unless
+  the action bar says the download session is active.
+- Pressing **O** exports data that has already been captured. It does not start a download
+  session or magically fetch distant chunks.
+- Mirrors go to `<.minecraft>/downloaded_worlds/` by default. Minecraft does **not** show
+  that folder in the Singleplayer menu. Choose **Saves Folder** in World Mirror's settings
+  if you want the mirror to appear there automatically.
+- A client-side mod can only save information sent to your client. Open containers whose
+  contents matter, and expect server-only data to be missing.
 
-## 🎮 How to Use
+## Quick start
 
-1. **Join** a multiplayer server (or singleplayer world).
-2. Press **`P`** to start a download session. You'll see an active status in your action bar.
-3. **Explore!** Walk around to load terrain. Remember to open any containers if you want their contents saved.
-4. When you're done, press **`O`** for a final export, then press **`P`** to stop. Automatic export on stop is configurable but disabled by default.
-5. **Play offline:** Your world is saved in `<.minecraft>/downloaded_worlds/` by default. *(Tip: Change the save location to your `Saves Folder` in the settings to play your mirrored worlds instantly from the singleplayer menu!)*
+1. Install the World Mirror JAR that exactly matches your Minecraft version.
+2. Join the world and press **P**. Check that the action bar says World Mirror is active.
+3. Explore the area you want to save. Open chests, barrels, furnaces, and other containers
+   whose inventories you want to keep.
+4. Press **O** when you want an immediate export, then wait for the completion message.
+5. Press **P** again to stop the download session.
+6. Open the mirror from Singleplayer if you selected **Saves Folder**. Otherwise it remains
+   under `<.minecraft>/downloaded_worlds/<mirror-name>/` until you move it or change the
+   per-world save location.
 
-World Mirror only captures while the action bar says the session is active. Pressing **O**
-does not start a session; it only flushes data already captured (plus the optional small
-manual pre-capture). The default `downloaded_worlds` folder is not Minecraft's world list.
-Choose **Saves Folder** before downloading if that is where you expect the mirror to appear.
+Automatic export on stop is available in settings but is disabled by default, so using
+**O before stopping** is the safest simple workflow.
 
-*Need to clear the in-memory capture cache? Press **`L`**. This does not delete mirror files already written to disk.*
-*Open the status screen at any time with **`I`**.*
+## Controls
 
-## ⚙️ Configuration & Conflicts
+| Key | Action |
+| --- | --- |
+| **P** | Start or stop the download session |
+| **O** | Export captured changes now |
+| **I** | Open World Mirror's status and settings screen |
+| **M** | Open the built-in chunk map |
+| **L** | Clear the in-memory capture cache |
 
-Press **`I`**, open the **Settings** tab, and select **Global Settings** to configure save location, stable/experimental pipeline, sync and capture budgets, cache policy, lifecycle behavior, logging, and map rendering. Pipeline changes apply on the next download activation. Optional **Mod Menu** provides another title-screen entry to the same Cloth Config screen.
+All controls can be rebound under *Options → Controls → World Mirror*. Clearing the cache
+with **L** does not delete mirror files already written to disk.
 
-For a reproducible performance report, temporarily enable **Performance Diagnostic
-Logging**, reproduce the problem for at least 30 seconds, and attach `latest.log` plus
-`worldmirror.json`. Low-frequency `[perf]` lines identify capture backlog, write latency,
-slow regions, failures, and heap pressure without per-chunk log spam.
+## What World Mirror saves
 
-You can handle **Chunk Conflicts** (when a chunk already exists on your local disk) globally or per-world using three strategies:
+- Terrain and block states from loaded chunks in the Overworld, Nether, End, and observed
+  custom dimensions.
+- Block entities such as signs, banners, player heads, beacons, and lecterns.
+- Contents of containers you open while recording, including double chests.
+- Best-effort snapshots of client-visible mobs, vehicles, paintings, item frames, armour
+  stands, and dropped items.
+- Changes over time, with periodic background exports and an optional experimental
+  adaptive mode for busier sessions.
 
-* **Overwrite (Default):** The server chunk always replaces your local copy.
-* **Ignore:** Keeps your local copy; only brand-new chunks are written.
-* **Manual:** Saves the incoming server chunk to `conflict_chunks/` in MCA format, leaving your local copy intact. Resolve conflicts later via the **Chunk Map** (per-chunk) or the Conflicts tab (**Overwrite All** / **Discard All**).
+The built-in map shows recorded chunks and unresolved conflicts. Drag to pan, use the
+mouse wheel to zoom, and hover a chunk for its coordinates, age, and source.
 
-## 📥 Installation & Requirements
+### What it cannot save perfectly
 
-* **Minecraft:** 1.21.11, 26.1.2, or 26.2 — use the exactly matching World Mirror JAR
-* **Java:** 21+ for Minecraft 1.21.11; 25+ for Minecraft 26.1.2 and 26.2
-* **Mod Loader:** [Fabric](https://fabricmc.net/use/) (≥ 0.19.3)
-* **Required:** Matching [Fabric API](https://modrinth.com/mod/fabric-api)
-* **Bundled:** Cloth Config and SQLite JDBC; LibGui is not required
-* **Optional:** [Mod Menu](https://modrinth.com/mod/modmenu) for a title-screen settings entry
-* **Optional Xaero integration:** [Xaero's World Map](https://modrinth.com/mod/xaeros-world-map) 1.40.x–1.44.x **and** the matching [Xaero World Map Bridge 0.1.0](https://github.com/billstark001/xaero-world-map-bridge/releases/tag/v0.1.0)
+World Mirror is not a server backup. Unopened inventories, server datapacks, structure
+metadata, hidden entity state, and chunks the server never sends may be absent. Entities
+in unloaded chunks keep their last client-known state until the chunk is observed again.
+Uncaptured terrain is intentionally void in the generated save.
 
----
+## Save locations and conflicts
 
-> **Capture limits:** A client-side mod can only save data the server sends to it. Open containers to capture their contents; server-only entity state, structures, and datapack definitions may be absent. Entities in unloaded chunks retain their last client-known state until observed loaded again.
+Press **I**, open **Settings**, then choose **Global Settings**. Optional Mod Menu provides
+another shortcut to the same screen.
+
+- **Downloaded Folder** (default): saves to `<.minecraft>/downloaded_worlds/`; useful for
+  keeping mirrors separate, but not listed in Singleplayer.
+- **Saves Folder**: saves to `<.minecraft>/saves/`; immediately visible in Singleplayer.
+
+When an incoming chunk meets an existing local chunk, choose one of these strategies:
+
+- **Overwrite** (default): use the eligible incoming server update.
+- **Ignore**: keep the local chunk and write only chunks that are not already present.
+- **Manual**: keep the local chunk and store the incoming version for review. Resolve it
+  from the chunk map or use **Overwrite All / Discard All** on the Conflicts tab.
+
+**Export Nearby Region** on the status screen creates a separate save in the Singleplayer
+folder from the chunks currently loaded around you. It is useful when you only need one
+area instead of a continuing mirror.
+
+## Installation
+
+| Minecraft | Required Java |
+| --- | --- |
+| 1.21.11 | Java 21 or newer |
+| 26.1.2 | Java 25 or newer |
+| 26.2 | Java 25 or newer |
+
+Install:
+
+1. [Fabric Loader](https://fabricmc.net/use/) 0.19.3 or newer.
+2. The matching [Fabric API](https://modrinth.com/mod/fabric-api).
+3. The World Mirror JAR for your exact Minecraft version.
+
+Cloth Config and SQLite JDBC are bundled. [Mod Menu](https://modrinth.com/mod/modmenu)
+is optional, and LibGui is not required.
+
+### Optional Xaero's World Map overlay
+
+World Mirror works without Xaero. To display World Mirror's chunk status on Xaero's
+fullscreen map, install both:
+
+- [Xaero's World Map](https://modrinth.com/mod/xaeros-world-map) 1.40.x–1.44.x for your
+  Minecraft version; and
+- the matching Fabric file from
+  [Xaero World Map Bridge 0.1.0](https://github.com/billstark001/xaero-world-map-bridge/releases/tag/v0.1.0).
+
+The bridge release provides separate builds for Minecraft 1.21.11, 26.1.2, and 26.2.
+
+## Reporting a performance problem
+
+Open Global Settings, enable **Performance Diagnostic Logging**, reproduce the problem for
+at least 30 seconds, then attach `latest.log` and `config/worldmirror.json` to the report.
+Disable the option afterward. The additional `[perf]` lines are designed for diagnosis and
+are not needed during normal play.

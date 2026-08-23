@@ -4,9 +4,10 @@ Downloads and inspects Xaero's World Map jars for the current World Mirror branc
 
 .DESCRIPTION
 By default this script downloads the newest Xaero's World Map Modrinth release
-matching the branch's `minecraft_version` and loader. It reuses an existing
-matching jar, including a `.jar.disabled` copy, instead of downloading the same
-file again.
+matching a legacy branch's `minecraft_version` or the root build's only target.
+On the current multi-target branch, pass `-MinecraftVersion` explicitly. It reuses
+an existing matching jar, including a `.jar.disabled` copy, instead of downloading
+the same file again.
 
 Use `-ListVersions` to list all published Xaero's World Map releases matching
 the current Minecraft version and loader. Use `-XaeroVersion` to download a
@@ -21,8 +22,7 @@ The generated files are placed under `build/tmp/xaero-inspect` by default and
 are intentionally build-cache style artifacts. They should not be committed.
 
 .PARAMETER MinecraftVersion
-Minecraft game version to query. Defaults to `minecraft_version` in
-`gradle.properties`.
+Minecraft game version to query. Defaults only when the branch declares one target.
 
 .PARAMETER XaeroVersion
 Specific Xaero's World Map version number to download, for example `1.41.1`.
@@ -84,8 +84,25 @@ function Get-GradleProperty {
     return $null
 }
 
+function Get-SupportedMinecraftVersions {
+    $buildFile = Join-Path $repoRoot "build.gradle"
+    if (-not (Test-Path -LiteralPath $buildFile)) {
+        return @()
+    }
+    return @(Select-String -LiteralPath $buildFile -Pattern '^\s*"([^"]+)":\s*\[' |
+        ForEach-Object { $_.Matches[0].Groups[1].Value })
+}
+
 if (-not $MinecraftVersion) {
     $MinecraftVersion = Get-GradleProperty "minecraft_version"
+}
+if (-not $MinecraftVersion) {
+    $supportedVersions = @(Get-SupportedMinecraftVersions)
+    if ($supportedVersions.Count -eq 1) {
+        $MinecraftVersion = $supportedVersions[0]
+    } else {
+        throw "This branch has multiple Minecraft targets ($($supportedVersions -join ', ')). Pass -MinecraftVersion explicitly."
+    }
 }
 
 $outputPath = Resolve-RepoPath $OutputDirectory

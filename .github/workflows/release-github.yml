@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: 'Version tag to create (e.g. v0.2.0)'
+        description: 'Version tag to create (e.g. v0.4.0)'
         required: true
         type: string
       prerelease:
@@ -32,14 +32,23 @@ jobs:
       - name: Setup JDK
         uses: actions/setup-java@v4
         with:
-          java-version: ${{ (github.base_ref || github.ref_name) == 'mc/1.21.11' && '21' || '25' }}
+          java-version: '25'
           distribution: 'microsoft'
 
       - name: Make Gradle wrapper executable
         run: chmod +x ./gradlew
 
       - name: Build
-        run: ./gradlew build
+        run: ./gradlew buildAll
+
+      - name: Collect distributable JARs
+        shell: bash
+        run: |
+          rm -rf build/release
+          mkdir -p build/release
+          find versions -path '*/build/libs/world-mirror-*-fabric.jar' -type f \
+            -exec cp '{}' build/release/ \;
+          test "$(find build/release -maxdepth 1 -name '*.jar' -type f | wc -l)" -eq 3
 
       - name: Read CHANGELOG.md (fallback release notes)
         id: read_changelog
@@ -59,6 +68,6 @@ jobs:
           body: ${{ inputs.changelog || steps.read_changelog.outputs.changelog }}
           prerelease: ${{ inputs.prerelease }}
           files: |
-            build/libs/world-mirror-*.jar
+            build/release/*.jar
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

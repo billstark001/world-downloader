@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: 'Version to publish (e.g. 0.2.0)'
+        description: 'Version to publish (e.g. 0.4.0)'
         required: true
         type: string
       release_channel:
@@ -36,14 +36,23 @@ jobs:
       - name: Setup JDK
         uses: actions/setup-java@v4
         with:
-          java-version: ${{ (github.base_ref || github.ref_name) == 'mc/1.21.11' && '21' || '25' }}
+          java-version: '25'
           distribution: 'microsoft'
 
       - name: Make Gradle wrapper executable
         run: chmod +x ./gradlew
 
       - name: Build
-        run: ./gradlew build
+        run: ./gradlew buildAll
+
+      - name: Collect distributable JARs
+        shell: bash
+        run: |
+          rm -rf build/release
+          mkdir -p build/release
+          find versions -path '*/build/libs/world-mirror-*-fabric.jar' -type f \
+            -exec cp '{}' build/release/ \;
+          test "$(find build/release -maxdepth 1 -name '*.jar' -type f | wc -l)" -eq 3
 
       - name: Read CHANGELOG.md (fallback changelog)
         id: read_changelog
@@ -60,12 +69,14 @@ jobs:
         with:
           modrinth-id: ${{ vars.MODRINTH_PROJECT_ID }}
           modrinth-token: ${{ secrets.MODRINTH_TOKEN }}
-          files: build/libs/world-mirror-${{ inputs.version }}+*.jar
+          files: build/release/world-mirror-${{ inputs.version }}+*-fabric.jar
           name: World Mirror ${{ inputs.version }}
           version: ${{ inputs.version }}
           version-type: ${{ inputs.release_channel }}
           changelog: ${{ inputs.changelog || steps.read_changelog.outputs.changelog }}
           game-versions: |
+            1.21.11
+            26.1.2
             26.2
           loaders: |
             fabric
