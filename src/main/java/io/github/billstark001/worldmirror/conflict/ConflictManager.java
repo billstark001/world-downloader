@@ -262,7 +262,9 @@ public final class ConflictManager {
                     if (overwrite) {
                         Path worldMcaPath = worldFileForConflictFile(
                                 worldFolder, conflictRoot, conflictMcaPath);
-                        applyConflictRegionToWorld(conflictMcaPath, worldMcaPath);
+                        if (!applyConflictRegionToWorld(conflictMcaPath, worldMcaPath)) {
+                            continue;
+                        }
                     }
                     Files.deleteIfExists(conflictMcaPath);
                 }
@@ -278,7 +280,7 @@ public final class ConflictManager {
 
     // ── Internals ─────────────────────────────────────────────────────────────
 
-    private static void applyConflictRegionToWorld(Path conflictFile, Path worldFile) {
+    private static boolean applyConflictRegionToWorld(Path conflictFile, Path worldFile) {
         try {
             McaRegionFile conflictMca = McaFileHelpers.readAuto(conflictFile.toFile());
             synchronized (McaWriteSupport.lockFor(worldFile)) {
@@ -304,9 +306,11 @@ public final class ConflictManager {
                 }
                 McaWriteSupport.writeAtomicallyLocked(worldMca, worldFile);
             }
+            return true;
         } catch (Exception e) {
             WMLogger.warn("Conflict region apply failed source=" + conflictFile
                     + " target=" + worldFile, e);
+            return false;
         }
     }
 

@@ -32,6 +32,38 @@ public class ChunkListener {
             long revision
     ) { }
 
+    /**
+     * Immutable export view of dirty chunk references and the lighting overlays
+     * that belong to the same capture session.  Keeping the overlay references
+     * here lets a background export finish safely after the live cache has been
+     * cleared for a newly joined source.
+     */
+    public static final class DirtySnapshot {
+        private final Map<ResourceKey<Level>, Map<ChunkPos, CapturedChunk>> chunks;
+        private final Map<ResourceKey<Level>, Map<ChunkPos, LightingOverlay>> lighting;
+
+        private DirtySnapshot(
+                Map<ResourceKey<Level>, Map<ChunkPos, CapturedChunk>> chunks,
+                Map<ResourceKey<Level>, Map<ChunkPos, LightingOverlay>> lighting) {
+            this.chunks = chunks;
+            this.lighting = lighting;
+        }
+
+        public Map<ResourceKey<Level>, Map<ChunkPos, CapturedChunk>> chunks() {
+            return chunks;
+        }
+
+        public CapturedChunk materialize(
+                ResourceKey<Level> dimension, ChunkPos pos, CapturedChunk captured) {
+            Map<ChunkPos, LightingOverlay> lightingByChunk = lighting.get(dimension);
+            LightingOverlay overlay = lightingByChunk == null ? null : lightingByChunk.get(pos);
+            CompoundTag nbt = overlay == null
+                    ? captured.nbt().copy()
+                    : overlay.materialize(captured.nbt());
+            return new CapturedChunk(nbt, captured.capturedAtMs(), captured.revision());
+        }
+    }
+
     // dimension → (chunkPos → capturedChunk)
     private static final ConcurrentHashMap<ResourceKey<Level>, ConcurrentHashMap<ChunkPos, CapturedChunk>>
             dimChunks = new ConcurrentHashMap<>();
@@ -109,18 +141,44 @@ public class ChunkListener {
      * background exporter.
      */
     public static Map<ResourceKey<Level>, Map<ChunkPos, CapturedChunk>> snapshotDirtyReferences() {
+        return snapshotDirtyState().chunks();
+    }
+
+    /** Captures dirty references together with their session-local lighting overlays. */
+    public static DirtySnapshot snapshotDirtyState() {
         Map<ResourceKey<Level>, Map<ChunkPos, CapturedChunk>> result = new HashMap<>();
+        Map<ResourceKey<Level>, Map<ChunkPos, LightingOverlay>> lighting = new HashMap<>();
         for (Map.Entry<ResourceKey<Level>, ConcurrentHashMap<ChunkPos, CapturedChunk>> dimEntry
                 : dimChunks.entrySet()) {
             Map<ChunkPos, CapturedChunk> dirty = new HashMap<>();
+            Map<ChunkPos, LightingOverlay> dimensionLighting = new HashMap<>();
+            Map<ChunkPos, LightingOverlay> liveLighting = dimLighting.get(dimEntry.getKey());
             for (Map.Entry<ChunkPos, CapturedChunk> entry : dimEntry.getValue().entrySet()) {
                 if (!isClean(dimEntry.getKey(), entry.getKey(), entry.getValue())) {
                     dirty.put(entry.getKey(), entry.getValue());
+                    if (liveLighting != null) {
+                        LightingOverlay overlay = liveLighting.get(entry.getKey());
+                        if (overlay != null) dimensionLighting.put(entry.getKey(), overlay);
+                    }
                 }
             }
-            if (!dirty.isEmpty()) result.put(dimEntry.getKey(), Map.copyOf(dirty));
+            if (!dirty.isEmpty()) {
+                result.put(dimEntry.getKey(), Map.copyOf(dirty));
+                if (!dimensionLighting.isEmpty()) {
+                    lighting.put(dimEntry.getKey(), Map.copyOf(dimensionLighting));
+                }
+            }
         }
-        return Map.copyOf(result);
+        return new DirtySnapshot(Map.copyOf(result), Map.copyOf(lighting));
+    }
+
+    /** Wraps an already independent chunk map, such as a one-shot nearby export. */
+    public static DirtySnapshot snapshotOf(
+            Map<ResourceKey<Level>, Map<ChunkPos, CapturedChunk>> chunks) {
+        Map<ResourceKey<Level>, Map<ChunkPos, CapturedChunk>> immutable = new HashMap<>();
+        chunks.forEach((dimension, dimensionChunks) ->
+                immutable.put(dimension, Map.copyOf(dimensionChunks)));
+        return new DirtySnapshot(Map.copyOf(immutable), Map.of());
     }
 
     /**

@@ -1,5 +1,6 @@
 package io.github.billstark001.worldmirror.conflict;
 
+import io.github.billstark001.worldmirror.io.ChunkExporter;
 import net.minecraft.SharedConstants;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.server.Bootstrap;
@@ -40,5 +41,24 @@ class ConflictManagerPersistenceTest {
 
         assertFalse(ConflictManager.saveConflict(
                 notDirectory, new ChunkPos(0, 0), new CompoundTag(), Level.OVERWORLD));
+    }
+
+    @Test
+    void bulkOverwriteRetainsConflictWhenWorldWriteFails(@TempDir Path world) throws Exception {
+        ChunkPos pos = new ChunkPos(0, 0);
+        CompoundTag chunk = new CompoundTag();
+        chunk.putInt("DataVersion", SharedConstants.getCurrentVersion().dataVersion().version());
+        chunk.putInt("xPos", 0);
+        chunk.putInt("zPos", 0);
+        chunk.putString("Status", "minecraft:full");
+        assertTrue(ConflictManager.saveConflict(world, pos, chunk, Level.OVERWORLD));
+
+        Path blockedRegionFile = ChunkExporter.regionDirForDimension(world, Level.OVERWORLD)
+                .resolve("r.0.0.mca");
+        Files.createDirectories(blockedRegionFile);
+
+        ConflictManager.clearAllConflicts(world, true);
+
+        assertTrue(ConflictManager.hasConflict(world, pos, Level.OVERWORLD));
     }
 }

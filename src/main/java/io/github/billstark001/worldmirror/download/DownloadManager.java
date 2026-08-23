@@ -407,6 +407,7 @@ public final class DownloadManager {
      */
     public static void onJoinWorld(Minecraft client) {
         clearPendingCaptureState();
+        clearCapturedWorldState();
         ContainerTracker.clear();
         mirrorCaptureWarningShown = false;
         applyTransition(client, ModConfig.get().lifecycle.onJoinWorld, "join-world");
@@ -485,6 +486,7 @@ public final class DownloadManager {
             clearPendingCaptureState();
             applyTransition(client, ModConfig.get().lifecycle.onServerWorldChange,
                     "server-world-change");
+            clearCapturedWorldState();
             lastSourceId  = currentSourceId;
             lastSourceType = currentSourceType;
             lastDimension = currentDim;
@@ -973,8 +975,7 @@ public final class DownloadManager {
         }
 
         // ── Game-thread preparations ──────────────────────────────────────────
-        Map<ResourceKey<Level>, Map<ChunkPos, ChunkListener.CapturedChunk>> snapshot =
-                ChunkListener.snapshotDirtyReferences();
+        ChunkListener.DirtySnapshot snapshot = ChunkListener.snapshotDirtyState();
         EntityTracker.pruneToMatchCapturedChunks();
 
         // Capture entities only when an entity packet/lifecycle event advanced
@@ -1025,10 +1026,10 @@ public final class DownloadManager {
             return false;
         }
 
-        int totalChunks = snapshot.values().stream().mapToInt(Map::size).sum();
+        int totalChunks = snapshot.chunks().values().stream().mapToInt(Map::size).sum();
         WMLogger.debug("Queued export: trigger=" + request.trigger()
                 + " dirtySnapshot=" + totalChunks + " dimensions="
-                + snapshot.size() + " pipeline=" + activePipelineMode);
+                + snapshot.chunks().size() + " pipeline=" + activePipelineMode);
 
         // ── Background thread ─────────────────────────────────────────────────
         exportInProgress.set(true);
@@ -1446,6 +1447,12 @@ public final class DownloadManager {
         return !isBlank(candidate) ? candidate : fallback;
     }
 
+    /** Drops source-scoped captured data before a different logical world becomes active. */
+    private static void clearCapturedWorldState() {
+        ChunkListener.clear();
+        EntityTracker.clear();
+    }
+
     private static ExportTrigger preferredTrigger(
             ExportTrigger candidate, ExportTrigger fallback) {
         return candidate.priority >= fallback.priority ? candidate : fallback;
@@ -1737,8 +1744,8 @@ public final class DownloadManager {
             return;
         }
 
-        Map<ResourceKey<Level>, Map<ChunkPos, ChunkListener.CapturedChunk>> snapshot =
-                Map.of(dimension, nearbyChunks);
+        ChunkListener.DirtySnapshot snapshot = ChunkListener.snapshotOf(
+                Map.of(dimension, nearbyChunks));
         Map<ResourceKey<Level>, Map<ChunkPos, List<CompoundTag>>> entitySnapshot = Map.of();
         Map<ResourceKey<Level>, Map<BlockPos, CompoundTag>> containerSnapshot =
                 ContainerTracker.snapshotSavedData();

@@ -111,7 +111,7 @@ public class ChunkExporter {
      */
     public static ExportResult exportChunks(
             Path worldFolder,
-            Map<ResourceKey<Level>, Map<ChunkPos, ChunkListener.CapturedChunk>> snapshot,
+            ChunkListener.DirtySnapshot snapshot,
             Map<ResourceKey<Level>, Map<ChunkPos, List<net.minecraft.nbt.CompoundTag>>> entitySnapshot,
             Map<ResourceKey<Level>, Map<BlockPos, net.minecraft.nbt.CompoundTag>> containerSnapshot,
             ConflictResolver resolver,
@@ -125,11 +125,11 @@ public class ChunkExporter {
         long databaseLookupNs = 0L, materializeNs = 0L, chunkReadNs = 0L;
         long resolveMergeWriteNs = 0L, flushNs = 0L, verificationNs = 0L, entityNs = 0L;
 
-        Set<ResourceKey<Level>> dimensions = new HashSet<>(snapshot.keySet());
+        Set<ResourceKey<Level>> dimensions = new HashSet<>(snapshot.chunks().keySet());
         dimensions.addAll(entitySnapshot.keySet());
         for (ResourceKey<Level> dimension : dimensions) {
             Map<ChunkPos, ChunkListener.CapturedChunk> dimChunks =
-                    snapshot.getOrDefault(dimension, Map.of());
+                    snapshot.chunks().getOrDefault(dimension, Map.of());
             Map<ChunkPos, List<net.minecraft.nbt.CompoundTag>> dimEntities =
                     entitySnapshot.getOrDefault(dimension, Map.of());
 
@@ -140,7 +140,8 @@ public class ChunkExporter {
             Files.createDirectories(entitiesDir);
 
             DimensionResult dimensionResult = exportDimensionChunks(
-                    regionDir, dimChunks, dimEntities, containerSnapshot, resolver, db, dimension, worldFolder);
+                    regionDir, dimChunks, dimEntities, containerSnapshot, resolver, db,
+                    dimension, worldFolder, snapshot);
             EntityResult entityResult = exportDimensionEntities(entitiesDir, dimEntities, dimension);
             entityWritesSuccessful &= entityResult.successful();
             chunkWritesSuccessful &= dimensionResult.successful();
@@ -173,7 +174,8 @@ public class ChunkExporter {
             ConflictResolver resolver,
             ChunkDatabase db,
             ResourceKey<Level> dimension,
-            Path worldFolder) {
+            Path worldFolder,
+            ChunkListener.DirtySnapshot snapshot) {
 
         Map<String, List<Map.Entry<ChunkPos, ChunkListener.CapturedChunk>>> chunksByRegion =
                 new HashMap<>();
@@ -243,7 +245,7 @@ public class ChunkExporter {
                             try {
                                 long stageStartedNs = System.nanoTime();
                                 ChunkListener.CapturedChunk materialized =
-                                        ChunkListener.materialize(dimension, chunkPos, captured);
+                                        snapshot.materialize(dimension, chunkPos, captured);
                                 materializeNs += System.nanoTime() - stageStartedNs;
                                 net.minecraft.nbt.CompoundTag chunkNbt = materialized.nbt();
                                 stageStartedNs = System.nanoTime();
