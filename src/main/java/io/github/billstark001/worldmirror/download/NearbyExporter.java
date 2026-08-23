@@ -8,6 +8,7 @@ import io.github.billstark001.worldmirror.io.ChunkExporter;
 import io.github.billstark001.worldmirror.io.ChunkSerializer;
 import io.github.billstark001.worldmirror.io.MirrorWorldgenAssets;
 import io.github.billstark001.worldmirror.io.WorldStructureCreator;
+import io.github.billstark001.worldmirror.io.WorldSettingsSnapshot;
 import io.github.billstark001.worldmirror.util.WMLogger;
 import io.github.billstark001.worldmirror.util.WMPlayerMessages;
 import net.fabricmc.loader.api.FabricLoader;
@@ -115,12 +116,14 @@ public final class NearbyExporter {
         Lineage lineage = resolveLineage(lineageChoice,
                 currentMirror.isMirror() ? currentMirror.metadata() : null,
                 WorldMetadata.detectSourceId(client), WorldMetadata.detectSourceType(client));
+        WorldSettingsSnapshot worldSettings = WorldStructureCreator.resolveNewWorldSettings(
+                WorldStructureCreator.captureWorldSettings(world));
 
         WMLogger.info("Exporting " + nearbyChunks.size() + " nearby chunk(s) to '"
                 + outFolder.getFileName() + "'...");
         Thread worker = new Thread(() -> writeSave(client, safeName, outFolder,
                 playerBX, playerBY, playerBZ, snapshot, entitySnapshot, containerSnapshot,
-                lineage), "WM-NearbyExport");
+                lineage, worldSettings), "WM-NearbyExport");
         worker.setDaemon(false);
         worker.start();
     }
@@ -130,7 +133,8 @@ public final class NearbyExporter {
                                   ChunkListener.DirtySnapshot snapshot,
                                   Map<ResourceKey<Level>, Map<ChunkPos, EntityTracker.ChunkUpdate>> entities,
                                   Map<ResourceKey<Level>, Map<BlockPos, CompoundTag>> containers,
-                                  Lineage lineage) {
+                                  Lineage lineage,
+                                  WorldSettingsSnapshot worldSettings) {
         try {
             Files.createDirectories(output);
             try (ChunkDatabase database = ChunkDatabase.open(output, lineage.sourceId())) {
@@ -143,7 +147,7 @@ public final class NearbyExporter {
                 }
             }
             if (!WorldStructureCreator.createLoadableWorldWithSpawn(
-                    output, worldName, spawnX, spawnY, spawnZ)) {
+                    output, worldName, spawnX, spawnY, spawnZ, worldSettings)) {
                 throw new IllegalStateException("Could not create nearby-export world structure");
             }
             WorldMetadata metadata = WorldMetadata.create(

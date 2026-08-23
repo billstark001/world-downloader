@@ -2,6 +2,7 @@ package io.github.billstark001.worldmirror.io;
 
 import com.mojang.serialization.Lifecycle;
 import net.minecraft.SharedConstants;
+import net.minecraft.client.multiplayer.ClientLevel;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Holder;
 import net.minecraft.core.HolderGetter;
@@ -107,23 +108,26 @@ final class WorldStructureApi {
     }
 
     static void createInitialWorld(Path worldFolder, String levelName, UUID playerId,
-                                   CompoundTag worldGenSettings) throws Exception {
-        PrimaryLevelData data = createLevelData(levelName, 0, 80, 0);
+                                   CompoundTag worldGenSettings,
+                                   WorldSettingsSnapshot settings) throws Exception {
+        PrimaryLevelData data = createLevelData(levelName, 0, 80, 0, settings);
         writeLevelData(worldFolder.resolve("level.dat"), data, playerId);
         writeSavedData(worldFolder.resolve("data/minecraft/world_gen_settings.dat"),
                 worldGenSettings);
         LevelStorageSource.writeGameRules(data, worldFolder,
                 createGameRules(data.getDataConfiguration()));
-        writeSavedData(worldFolder.resolve("data/minecraft/weather.dat"), createWeatherData());
+        writeSavedData(worldFolder.resolve("data/minecraft/weather.dat"),
+                createWeatherData(settings));
         writeSavedData(worldFolder.resolve("data/minecraft/world_clocks.dat"),
-                createWorldClocksData());
+                createWorldClocksData(settings.dayTime()));
     }
 
     static void writeSpawnedLevelData(Path worldFolder, String levelName, UUID playerId,
                                       int spawnX, int spawnY, int spawnZ,
-                                      CompoundTag worldGenSettings) throws Exception {
+                                      CompoundTag worldGenSettings,
+                                      WorldSettingsSnapshot settings) throws Exception {
         writeLevelData(worldFolder.resolve("level.dat"),
-                createLevelData(levelName, spawnX, spawnY, spawnZ), playerId);
+                createLevelData(levelName, spawnX, spawnY, spawnZ, settings), playerId);
     }
 
     static void updateOwnedLevelData(Path worldFolder, boolean migrateWorldgen,
@@ -149,18 +153,52 @@ final class WorldStructureApi {
         WorldStructureCreator.writeCompressedAtomically(file, root);
     }
 
+    static WorldSettingsSnapshot captureWorldSettings(ClientLevel world) {
+        long dayTime = world.dimensionType().defaultClock()
+                .map(clock -> world.clockManager().getTotalTicks(clock))
+                .orElse(world.getGameTime());
+        return new WorldSettingsSnapshot(
+                world.getGameTime(), dayTime,
+                world.getRainLevel(1.0F) > 0.0F,
+                world.getThunderLevel(1.0F) > 0.0F,
+                world.getDifficulty().getId());
+    }
+
+    static void syncWorldSetting(Path worldFolder, WorldSettingsSnapshot settings,
+                                 WorldStructureCreator.Setting setting) throws Exception {
+        switch (setting) {
+            case TIME -> {
+                patchLevelData(worldFolder, data -> data.putLong("Time", settings.gameTime()));
+                writeSavedDataAtomically(
+                        worldFolder.resolve("data/minecraft/world_clocks.dat"),
+                        createWorldClocksData(settings.dayTime()));
+            }
+            case WEATHER -> writeSavedDataAtomically(
+                    worldFolder.resolve("data/minecraft/weather.dat"),
+                    createWeatherData(settings));
+            case DIFFICULTY -> patchLevelData(worldFolder, data -> {
+                CompoundTag difficultySettings = data.getCompoundOrEmpty("difficulty_settings");
+                difficultySettings.putString("difficulty",
+                        Difficulty.byId(settings.difficultyId()).getSerializedName());
+                data.put("difficulty_settings", difficultySettings);
+            });
+        }
+    }
+
     private static PrimaryLevelData createLevelData(String levelName,
-                                                    int spawnX, int spawnY, int spawnZ) {
-        LevelSettings settings = new LevelSettings(
+                                                    int spawnX, int spawnY, int spawnZ,
+                                                    WorldSettingsSnapshot settings) {
+        LevelSettings levelSettings = new LevelSettings(
                 WorldStructureCreator.resolvedLevelName(levelName),
                 GameType.CREATIVE,
-                new LevelSettings.DifficultySettings(Difficulty.PEACEFUL, false, false),
+                new LevelSettings.DifficultySettings(
+                        Difficulty.byId(settings.difficultyId()), false, false),
                 true,
                 WorldDataConfiguration.DEFAULT);
-        PrimaryLevelData data = new PrimaryLevelData(settings,
+        PrimaryLevelData data = new PrimaryLevelData(levelSettings,
                 PrimaryLevelData.SpecialWorldProperty.NONE, Lifecycle.stable());
         data.setInitialized(true);
-        data.setGameTime(6000L);
+        data.setGameTime(settings.gameTime());
         data.setSpawn(LevelData.RespawnData.of(Level.OVERWORLD,
                 new BlockPos(spawnX, spawnY, spawnZ), 0.0F, 0.0F));
         return data;
@@ -210,20 +248,38 @@ final class WorldStructureApi {
         WorldStructureCreator.writeCompressed(file.toFile(), root);
     }
 
-    private static CompoundTag createWeatherData() {
+    private static void writeSavedDataAtomically(Path file, CompoundTag data) throws Exception {
+        CompoundTag root = new CompoundTag();
+        root.put("data", data);
+        NbtUtils.addCurrentDataVersion(root);
+        WorldStructureCreator.writeCompressedAtomically(file, root);
+    }
+
+    private static void patchLevelData(Path worldFolder,
+                                       java.util.function.Consumer<CompoundTag> patch)
+            throws Exception {
+        Path levelDat = worldFolder.resolve("level.dat");
+        CompoundTag root = NbtIo.readCompressed(levelDat, NbtAccounter.unlimitedHeap());
+        CompoundTag data = root.getCompoundOrEmpty("Data");
+        patch.accept(data);
+        root.put("Data", data);
+        WorldStructureCreator.writeCompressedAtomically(levelDat, root);
+    }
+
+    private static CompoundTag createWeatherData(WorldSettingsSnapshot settings) {
         CompoundTag weather = new CompoundTag();
-        weather.putInt("clear_weather_time", 0);
-        weather.putInt("rain_time", 0);
-        weather.putInt("thunder_time", 0);
-        weather.putBoolean("raining", false);
-        weather.putBoolean("thundering", false);
+        weather.putInt("clear_weather_time", settings.raining() ? 0 : 6_000);
+        weather.putInt("rain_time", settings.raining() ? 6_000 : 0);
+        weather.putInt("thunder_time", settings.thundering() ? 6_000 : 0);
+        weather.putBoolean("raining", settings.raining());
+        weather.putBoolean("thundering", settings.thundering());
         return weather;
     }
 
-    private static CompoundTag createWorldClocksData() {
+    private static CompoundTag createWorldClocksData(long dayTime) {
         CompoundTag states = new CompoundTag();
-        states.put("minecraft:overworld", createClockState(6000L));
-        states.put("minecraft:the_end", createClockState(6000L));
+        states.put("minecraft:overworld", createClockState(dayTime));
+        states.put("minecraft:the_end", createClockState(dayTime));
         return roundTripWorldClocksData(states);
     }
 

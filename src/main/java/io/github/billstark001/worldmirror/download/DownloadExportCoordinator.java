@@ -11,6 +11,7 @@ import io.github.billstark001.worldmirror.core.EntityTracker;
 import io.github.billstark001.worldmirror.io.ChunkExporter;
 import io.github.billstark001.worldmirror.io.MirrorWorldgenAssets;
 import io.github.billstark001.worldmirror.io.WorldStructureCreator;
+import io.github.billstark001.worldmirror.io.WorldSettingsSnapshot;
 import io.github.billstark001.worldmirror.util.WMLogger;
 import io.github.billstark001.worldmirror.util.WMPlayerMessages;
 import net.minecraft.ChatFormatting;
@@ -58,12 +59,22 @@ final class DownloadExportCoordinator {
                    String preferredSourceId, String preferredSourceType,
                    Map<ResourceKey<Level>, Map<BlockPos, CompoundTag>> containerSnapshot,
                    Map<ResourceKey<Level>, Map<ChunkPos, EntityTracker.ChunkUpdate>> entitySnapshot,
-                   ChunkListener.DirtySnapshot terrainSnapshot) {
+                   ChunkListener.DirtySnapshot terrainSnapshot,
+                   WorldSettingsSnapshot worldSettings) {
+        Request(Trigger trigger, boolean shouldNotify, boolean preCaptureAlreadyDone,
+                String preferredSourceId, String preferredSourceType,
+                Map<ResourceKey<Level>, Map<BlockPos, CompoundTag>> containerSnapshot,
+                Map<ResourceKey<Level>, Map<ChunkPos, EntityTracker.ChunkUpdate>> entitySnapshot,
+                ChunkListener.DirtySnapshot terrainSnapshot) {
+            this(trigger, shouldNotify, preCaptureAlreadyDone, preferredSourceId,
+                    preferredSourceType, containerSnapshot, entitySnapshot, terrainSnapshot, null);
+        }
+
         Request(Trigger trigger, boolean shouldNotify, boolean preCaptureAlreadyDone,
                 String preferredSourceId, String preferredSourceType,
                 Map<ResourceKey<Level>, Map<BlockPos, CompoundTag>> containerSnapshot) {
             this(trigger, shouldNotify, preCaptureAlreadyDone, preferredSourceId,
-                    preferredSourceType, containerSnapshot, null, null);
+                    preferredSourceType, containerSnapshot, null, null, null);
         }
     }
 
@@ -155,6 +166,7 @@ final class DownloadExportCoordinator {
     }
 
     boolean start(Minecraft client, Request request) {
+        request = withWorldSettings(client, request);
         if (inProgress.get()) {
             if (request.trigger().automatic) {
                 automaticSuppressed.incrementAndGet();
@@ -185,7 +197,7 @@ final class DownloadExportCoordinator {
                 defer(new Request(request.trigger(), request.shouldNotify(), true,
                         request.preferredSourceId(), request.preferredSourceType(),
                         request.containerSnapshot(), request.entitySnapshot(),
-                        request.terrainSnapshot()));
+                        request.terrainSnapshot(), request.worldSettings()));
                 return false;
             }
         }
@@ -232,9 +244,11 @@ final class DownloadExportCoordinator {
         pipeline.onExportStarted(System.currentTimeMillis(), totalChunks, ModConfig.get());
         final Path finalWorldFolder = worldFolder;
         final boolean diagnosticExport = ModConfig.get().performance.diagnosticPerformanceLogging;
-        executor.execute(() -> runWorker(request, snapshot, entitySnapshot, containerSnapshot,
+        final Request preparedRequest = request;
+        executor.execute(() -> runWorker(preparedRequest, snapshot, entitySnapshot, containerSnapshot,
                 entitySnapshotRevision, totalChunks, finalSourceId, finalSourceType,
-                finalWorldFolder, pipelineMode, diagnosticExport));
+                finalWorldFolder, pipelineMode, diagnosticExport,
+                preparedRequest.worldSettings()));
         return true;
     }
 
@@ -254,7 +268,8 @@ final class DownloadExportCoordinator {
                            long entitySnapshotRevision, int totalChunks,
                            String sourceId, String sourceType, Path worldFolder,
                            ModConfig.DownloadPipelineMode pipelineMode,
-                           boolean diagnosticExport) {
+                           boolean diagnosticExport,
+                           WorldSettingsSnapshot worldSettings) {
         ChunkDatabase db = null;
         long startedNs = System.nanoTime();
         long startedCpuNs = currentThreadCpuTimeNs();
@@ -272,7 +287,7 @@ final class DownloadExportCoordinator {
                     ? WorldMetadata.create(sourceId, sourceType, "synchronized")
                     : readiness.metadata();
             boolean worldgenReady = WorldStructureCreator.createLoadableWorld(
-                    worldFolder, sourceId, createFreshWorld, createFreshWorld);
+                    worldFolder, sourceId, createFreshWorld, createFreshWorld, worldSettings);
             if (!worldgenReady) {
                 WMLogger.warn("World generation setup failed; export aborted before writing chunks.");
                 notifyFailure(request.shouldNotify());
@@ -397,14 +412,14 @@ final class DownloadExportCoordinator {
                     pending.shouldNotify() || request.shouldNotify(), true,
                     pending.preferredSourceId(), pending.preferredSourceType(),
                     pending.containerSnapshot(), pending.entitySnapshot(),
-                    pending.terrainSnapshot());
+                    pending.terrainSnapshot(), pending.worldSettings());
         }
         if (hasPreparedWorldSnapshot(request)) {
             return new Request(preferredTrigger(request.trigger(), pending.trigger()),
                     pending.shouldNotify() || request.shouldNotify(), true,
                     request.preferredSourceId(), request.preferredSourceType(),
                     request.containerSnapshot(), request.entitySnapshot(),
-                    request.terrainSnapshot());
+                    request.terrainSnapshot(), request.worldSettings());
         }
         return new Request(preferredTrigger(request.trigger(), pending.trigger()),
                     pending.shouldNotify() || request.shouldNotify(),
@@ -416,7 +431,9 @@ final class DownloadExportCoordinator {
                     request.entitySnapshot() != null
                             ? request.entitySnapshot() : pending.entitySnapshot(),
                     request.terrainSnapshot() != null
-                            ? request.terrainSnapshot() : pending.terrainSnapshot());
+                            ? request.terrainSnapshot() : pending.terrainSnapshot(),
+                    request.worldSettings() != null
+                            ? request.worldSettings() : pending.worldSettings());
     }
 
     private static boolean hasPreparedWorldSnapshot(Request request) {
@@ -428,7 +445,7 @@ final class DownloadExportCoordinator {
         return new Request(request.trigger(), request.shouldNotify(), request.preCaptureAlreadyDone(),
                 request.preferredSourceId(), request.preferredSourceType(),
                 ContainerTracker.snapshotSavedData(), request.entitySnapshot(),
-                request.terrainSnapshot());
+                request.terrainSnapshot(), request.worldSettings());
     }
 
     /** Captures stop-time state before a running export can outlive the client world. */
@@ -443,7 +460,17 @@ final class DownloadExportCoordinator {
                 ? request.terrainSnapshot() : ChunkListener.snapshotDirtyState();
         return new Request(request.trigger(), request.shouldNotify(), true,
                 request.preferredSourceId(), request.preferredSourceType(),
-                request.containerSnapshot(), entities, terrain);
+                request.containerSnapshot(), entities, terrain, request.worldSettings());
+    }
+
+    private static Request withWorldSettings(Minecraft client, Request request) {
+        if (request.worldSettings() != null) return request;
+        WorldSettingsSnapshot captured = WorldStructureCreator.resolveNewWorldSettings(
+                WorldStructureCreator.captureWorldSettings(client.level));
+        return new Request(request.trigger(), request.shouldNotify(),
+                request.preCaptureAlreadyDone(), request.preferredSourceId(),
+                request.preferredSourceType(), request.containerSnapshot(),
+                request.entitySnapshot(), request.terrainSnapshot(), captured);
     }
 
     private static ConflictResolver buildResolver(String sourceId) {

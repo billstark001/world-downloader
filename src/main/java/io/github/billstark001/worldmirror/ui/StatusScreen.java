@@ -7,6 +7,8 @@ import io.github.billstark001.worldmirror.download.DownloadManager;
 import io.github.billstark001.worldmirror.download.MirrorMapping;
 import io.github.billstark001.worldmirror.download.MirrorWorldContext;
 import io.github.billstark001.worldmirror.download.WorldMetadata;
+import io.github.billstark001.worldmirror.io.WorldSettingsSnapshot;
+import io.github.billstark001.worldmirror.io.WorldStructureCreator;
 import me.shedaniel.autoconfig.AutoConfigClient;
 import net.fabricmc.api.EnvType;
 import net.fabricmc.api.Environment;
@@ -29,8 +31,16 @@ public class StatusScreen extends StatusScreenApi {
     private boolean lastDownloadState;
     private Button toggleButton;
     private Component settingsFailure;
+    private boolean settingsSucceeded;
     private long lastSyncTime;
     private int conflictCount;
+    private StatusContext statusContext;
+
+    private record StatusContext(
+            String sourceId,
+            String sourceType,
+            Path output,
+            WorldMetadata metadata) { }
 
     protected StatusScreen() {
         super(Component.translatable("screen.worldmirror.status.title"));
@@ -69,6 +79,7 @@ public class StatusScreen extends StatusScreenApi {
         super.tick();
         boolean export = DownloadManager.isExportInProgress();
         boolean downloading = DownloadManager.isActive();
+        boolean exportFinished = lastExportState && !export;
         if (export != lastExportState || downloading != lastDownloadState) {
             lastExportState = export;
             lastDownloadState = downloading;
@@ -78,6 +89,7 @@ public class StatusScreen extends StatusScreenApi {
                         : "screen.worldmirror.status.startDownload"));
             }
         }
+        if (exportFinished) loadPersistentStatus();
     }
 
     @Override
@@ -113,7 +125,7 @@ public class StatusScreen extends StatusScreenApi {
     }
 
     private void addSettingsButtons(int left) {
-        String sourceId = WorldMetadata.detectSourceId(Minecraft.getInstance());
+        String sourceId = statusContext.sourceId();
         ModConfig.SaveLocation saveLocation = resolveSaveLocation(sourceId);
         ModConfig.ConflictStrategy strategy = resolveStrategy(sourceId);
         addRenderableWidget(Button.builder(Component.translatable(
@@ -125,11 +137,13 @@ public class StatusScreen extends StatusScreenApi {
                     ModConfig.SaveLocation target =
                             values[(saveLocation.ordinal() + 1) % values.length];
                     if (DownloadManager.isActive()) {
+                        settingsSucceeded = false;
                         settingsFailure = Component.translatable(
                                 "screen.worldmirror.move.failure.download_active");
                         return;
                     }
                     if (DownloadManager.isExportInProgress()) {
+                        settingsSucceeded = false;
                         settingsFailure = Component.translatable(
                                 "screen.worldmirror.move.failure.export_in_progress");
                         return;
@@ -152,15 +166,32 @@ public class StatusScreen extends StatusScreenApi {
                             values[(strategy.ordinal() + 1) % values.length].name());
                     refresh();
                 }).bounds(left, 140, PANEL_WIDTH, BUTTON_HEIGHT).build());
+        int settingWidth = (PANEL_WIDTH - 8) / 3;
+        boolean canSync = canSyncWorldSettings();
+        Button syncTime = addRenderableWidget(Button.builder(Component.translatable(
+                        "screen.worldmirror.status.syncTime"),
+                button -> syncWorldSetting(WorldStructureCreator.Setting.TIME))
+                .bounds(left, 164, settingWidth, BUTTON_HEIGHT).build());
+        Button syncWeather = addRenderableWidget(Button.builder(Component.translatable(
+                        "screen.worldmirror.status.syncWeather"),
+                button -> syncWorldSetting(WorldStructureCreator.Setting.WEATHER))
+                .bounds(left + settingWidth + 4, 164, settingWidth, BUTTON_HEIGHT).build());
+        Button syncDifficulty = addRenderableWidget(Button.builder(Component.translatable(
+                        "screen.worldmirror.status.syncDifficulty"),
+                button -> syncWorldSetting(WorldStructureCreator.Setting.DIFFICULTY))
+                .bounds(left + (settingWidth + 4) * 2, 164, settingWidth, BUTTON_HEIGHT).build());
+        syncTime.active = canSync;
+        syncWeather.active = canSync;
+        syncDifficulty.active = canSync;
         addRenderableWidget(Button.builder(Component.translatable(
                         "screen.worldmirror.status.openSettings"),
                 button -> showScreen(AutoConfigClient.getConfigScreen(
                         ModConfig.class, this).get()))
-                .bounds(left, 174, PANEL_WIDTH, BUTTON_HEIGHT).build());
+                .bounds(left, 188, PANEL_WIDTH, BUTTON_HEIGHT).build());
     }
 
     private void addConflictButtons(int left) {
-        Path output = DownloadManager.previewOutputPath(Minecraft.getInstance());
+        Path output = statusContext.output();
         if (conflictCount > 0) {
             addRenderableWidget(Button.builder(Component.translatable(
                             "screen.worldmirror.status.overwriteAll"),
@@ -178,10 +209,10 @@ public class StatusScreen extends StatusScreenApi {
     }
 
     private void renderStatus(Canvas graphics) {
-        Minecraft client = Minecraft.getInstance();
-        String sourceType = WorldMetadata.detectSourceType(client);
-        String sourceId = WorldMetadata.detectSourceId(client);
-        String folder = MirrorMapping.getInstance().previewBaseFolderName(sourceId);
+        String sourceType = statusContext.sourceType();
+        String sourceId = statusContext.sourceId();
+        Path fileName = statusContext.output().getFileName();
+        String folder = fileName != null ? fileName.toString() : statusContext.output().toString();
         int x = left();
         pairLine(graphics, "screen.worldmirror.status.sourceId", sourceType + " · " + sourceId,
                 "screen.worldmirror.status.mirrorPath", folder, x, 62);
@@ -205,12 +236,37 @@ public class StatusScreen extends StatusScreenApi {
         graphics.centered(Component.translatable("screen.worldmirror.tab.settingsHeader"),
                 width / 2, 66, 0xFFE0E0E0);
         line(graphics, "screen.worldmirror.status.outputPath",
-                DownloadManager.previewOutputPath(Minecraft.getInstance()).toString(), left(), 80);
+                statusContext.output().toString(), left(), 80);
         line(graphics, "screen.worldmirror.status.xaeroOverlay",
                 bridgeStatus().getString(), left(), 94);
         if (settingsFailure != null) {
-            graphics.centered(settingsFailure, width / 2, 104, 0xFFFF5555);
+            graphics.centered(settingsFailure, width / 2, 104,
+                    settingsSucceeded ? 0xFF55FF55 : 0xFFFF5555);
         }
+    }
+
+    private boolean canSyncWorldSettings() {
+        return Minecraft.getInstance().level != null
+                && !MirrorWorldContext.current().isMirror()
+                && Files.isDirectory(statusContext.output())
+                && !DownloadManager.isActive()
+                && !DownloadManager.isExportInProgress();
+    }
+
+    private void syncWorldSetting(WorldStructureCreator.Setting setting) {
+        Minecraft client = Minecraft.getInstance();
+        if (!canSyncWorldSettings()) {
+            settingsSucceeded = false;
+            settingsFailure = Component.translatable(
+                    "screen.worldmirror.status.syncSettingUnavailable");
+            return;
+        }
+        WorldSettingsSnapshot snapshot = WorldStructureCreator.captureWorldSettings(client.level);
+        settingsSucceeded = WorldStructureCreator.syncWorldSetting(
+                statusContext.output(), snapshot, setting);
+        settingsFailure = Component.translatable(settingsSucceeded
+                ? "screen.worldmirror.status.syncSettingDone"
+                : "screen.worldmirror.status.syncSettingFailed");
     }
 
     private void renderConflicts(Canvas graphics) {
@@ -271,15 +327,37 @@ public class StatusScreen extends StatusScreenApi {
 
     private void loadPersistentStatus() {
         Minecraft client = Minecraft.getInstance();
-        Path output = DownloadManager.previewOutputPath(client);
+        statusContext = resolveStatusContext(client);
+        Path output = statusContext.output();
         conflictCount = ConflictManager.countAllConflicts(output);
-        try {
-            WorldMetadata metadata = WorldMetadata.loadOrCreate(output,
-                    WorldMetadata.detectSourceId(client), WorldMetadata.detectSourceType(client));
+        WorldMetadata metadata = statusContext.metadata();
+        if (metadata != null) {
             lastSyncTime = metadata.lastSyncTime;
-        } catch (Exception ignored) {
-            lastSyncTime = -1L;
+        } else {
+            lastSyncTime = Files.isRegularFile(output.resolve(WorldMetadata.FILE_NAME)) ? -1L : 0L;
         }
+    }
+
+    private static StatusContext resolveStatusContext(Minecraft client) {
+        MirrorWorldContext.Snapshot mirror = MirrorWorldContext.current();
+        if (mirror.worldFolder() != null) {
+            WorldMetadata metadata = WorldMetadata.loadIfPresent(mirror.worldFolder())
+                    .orElse(mirror.metadata());
+            String sourceId = metadata != null && metadata.sourceId != null
+                    && !metadata.sourceId.isBlank()
+                    ? metadata.sourceId : WorldMetadata.detectSourceId(client);
+            String sourceType = metadata != null && metadata.sourceType != null
+                    && !metadata.sourceType.isBlank()
+                    ? metadata.sourceType : WorldMetadata.detectSourceType(client);
+            return new StatusContext(sourceId, sourceType, mirror.worldFolder(), metadata);
+        }
+
+        String sourceId = WorldMetadata.detectSourceId(client);
+        String sourceType = WorldMetadata.detectSourceType(client);
+        Path output = DownloadManager.previewOutputPathForLocation(
+                sourceId, resolveSaveLocation(sourceId));
+        WorldMetadata metadata = WorldMetadata.loadIfPresent(output).orElse(null);
+        return new StatusContext(sourceId, sourceType, output, metadata);
     }
 
     private Component lastSync() {

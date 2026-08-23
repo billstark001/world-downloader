@@ -81,9 +81,10 @@ class WorldClocksDataTest {
     }
 
     private static CompoundTag generatedWorldClocksData() throws Exception {
-        Method method = WorldStructureApi.class.getDeclaredMethod("createWorldClocksData");
+        Method method = WorldStructureApi.class.getDeclaredMethod(
+                "createWorldClocksData", long.class);
         method.setAccessible(true);
-        return (CompoundTag) method.invoke(null);
+        return (CompoundTag) method.invoke(null, 6_000L);
     }
 
     private static void repairOwnedSavedData(Path worldFolder) throws Exception {

@@ -58,6 +58,12 @@ public class ModConfig implements ConfigData {
         TRANSPARENT
     }
 
+    /** How a setting is chosen when a mirror save is first created. */
+    public enum NewWorldSettingBehavior {
+        FOLLOW_CURRENT,
+        DEFAULT
+    }
+
     // ── Fields ───────────────────────────────────────────────────────────────
 
     @ConfigEntry.Gui.Tooltip
@@ -76,6 +82,18 @@ public class ModConfig implements ConfigData {
     @ConfigEntry.Gui.Tooltip
     @ConfigEntry.Gui.EnumHandler(option = ConfigEntry.Gui.EnumHandler.EnumDisplayOption.DROPDOWN)
     public ConflictStrategy defaultConflictStrategy = ConflictStrategy.OVERWRITE;
+
+    @ConfigEntry.Gui.Tooltip
+    @ConfigEntry.Gui.EnumHandler(option = ConfigEntry.Gui.EnumHandler.EnumDisplayOption.DROPDOWN)
+    public NewWorldSettingBehavior newWorldTime = NewWorldSettingBehavior.FOLLOW_CURRENT;
+
+    @ConfigEntry.Gui.Tooltip
+    @ConfigEntry.Gui.EnumHandler(option = ConfigEntry.Gui.EnumHandler.EnumDisplayOption.DROPDOWN)
+    public NewWorldSettingBehavior newWorldWeather = NewWorldSettingBehavior.FOLLOW_CURRENT;
+
+    @ConfigEntry.Gui.Tooltip
+    @ConfigEntry.Gui.EnumHandler(option = ConfigEntry.Gui.EnumHandler.EnumDisplayOption.DROPDOWN)
+    public NewWorldSettingBehavior newWorldDifficulty = NewWorldSettingBehavior.FOLLOW_CURRENT;
 
     // ── Cache control ─────────────────────────────────────────────────────────
 

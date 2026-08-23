@@ -61,7 +61,8 @@ public final class MirrorMigrationPlan {
                 dataVersion, MirrorWorldgenAssets.ASSET_REVISION);
         boolean cleanupLegacyVoidChunks = metadata.needsLegacyVoidChunkCleanup();
         return new Inspection(normalized,
-                migrateWorldgen || refreshAssets || cleanupLegacyVoidChunks ? State.OUTDATED : State.CURRENT,
+                migrateWorldgen || refreshAssets || cleanupLegacyVoidChunks
+                        ? State.OUTDATED : State.CURRENT,
                 metadata, migrateWorldgen, refreshAssets, cleanupLegacyVoidChunks);
     }
 }

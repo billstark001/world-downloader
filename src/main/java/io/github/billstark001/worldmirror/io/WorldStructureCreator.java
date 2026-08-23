@@ -1,8 +1,10 @@
 package io.github.billstark001.worldmirror.io;
 
+import io.github.billstark001.worldmirror.config.ModConfig;
 import io.github.billstark001.worldmirror.util.WMLogger;
 import net.fabricmc.api.EnvType;
 import net.fabricmc.api.Environment;
+import net.minecraft.client.multiplayer.ClientLevel;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.nbt.DoubleTag;
 import net.minecraft.nbt.FloatTag;
@@ -22,7 +24,37 @@ import java.util.UUID;
 /** Version-neutral orchestration for creating and updating playable mirror saves. */
 @Environment(EnvType.CLIENT)
 public final class WorldStructureCreator {
+    public enum Setting { TIME, WEATHER, DIFFICULTY }
+
     private WorldStructureCreator() { }
+
+    public static WorldSettingsSnapshot captureWorldSettings(ClientLevel world) {
+        if (world == null) return WorldSettingsSnapshot.defaults();
+        try {
+            return WorldStructureApi.captureWorldSettings(world);
+        } catch (Exception e) {
+            WMLogger.warnRateLimited("world-settings-capture", 30_000L,
+                    "Could not capture source world settings; using defaults", e);
+            return WorldSettingsSnapshot.defaults();
+        }
+    }
+
+    public static WorldSettingsSnapshot resolveNewWorldSettings(
+            WorldSettingsSnapshot current) {
+        WorldSettingsSnapshot defaults = WorldSettingsSnapshot.defaults();
+        ModConfig config = ModConfig.get();
+        return new WorldSettingsSnapshot(
+                config.newWorldTime == ModConfig.NewWorldSettingBehavior.FOLLOW_CURRENT
+                        ? current.gameTime() : defaults.gameTime(),
+                config.newWorldTime == ModConfig.NewWorldSettingBehavior.FOLLOW_CURRENT
+                        ? current.dayTime() : defaults.dayTime(),
+                config.newWorldWeather == ModConfig.NewWorldSettingBehavior.FOLLOW_CURRENT
+                        && current.raining(),
+                config.newWorldWeather == ModConfig.NewWorldSettingBehavior.FOLLOW_CURRENT
+                        && current.thundering(),
+                config.newWorldDifficulty == ModConfig.NewWorldSettingBehavior.FOLLOW_CURRENT
+                        ? current.difficultyId() : defaults.difficultyId());
+    }
 
     public static CompoundTag createMirrorWorldGenSettings() {
         CompoundTag worldGenSettings = new CompoundTag();
@@ -43,13 +75,14 @@ public final class WorldStructureCreator {
     }
 
     public static boolean createLoadableWorldWithSpawn(Path worldFolder, String levelName,
-                                                        int spawnX, int spawnY, int spawnZ) {
+                                                        int spawnX, int spawnY, int spawnZ,
+                                                        WorldSettingsSnapshot settings) {
         try {
-            if (!createLoadableWorld(worldFolder, levelName, true, true)) return false;
+            if (!createLoadableWorld(worldFolder, levelName, true, true, settings)) return false;
             UUID playerId = singleplayerUuid(levelName);
             WorldStructureApi.writeSpawnedLevelData(
                     worldFolder, levelName, playerId, spawnX, spawnY, spawnZ,
-                    createMirrorWorldGenSettings());
+                    createMirrorWorldGenSettings(), settings);
             writeCompressed(WorldStructureApi.playerDataPath(worldFolder, playerId).toFile(),
                     createPlayerData(spawnX, spawnY, spawnZ));
             WMLogger.debug("Nearby-export world created at: " + worldFolder.toAbsolutePath());
@@ -61,7 +94,8 @@ public final class WorldStructureCreator {
     }
 
     public static boolean createLoadableWorld(Path worldFolder, String levelName,
-                                              boolean migrateWorldgen, boolean refreshAssets) {
+                                              boolean migrateWorldgen, boolean refreshAssets,
+                                              WorldSettingsSnapshot settings) {
         File folder = worldFolder.toFile();
         try {
             boolean firstTime = !worldFolder.resolve("level.dat").toFile().exists();
@@ -74,7 +108,7 @@ public final class WorldStructureCreator {
                 MirrorWorldgenAssets.install(worldFolder, WorldStructureApi.dataPackFormat());
                 UUID playerId = singleplayerUuid(levelName);
                 WorldStructureApi.createInitialWorld(worldFolder, levelName, playerId,
-                        createMirrorWorldGenSettings());
+                        createMirrorWorldGenSettings(), settings);
                 writeCompressed(WorldStructureApi.playerDataPath(worldFolder, playerId).toFile(),
                         createPlayerData(0, 80, 0));
                 WMLogger.debug("World structure created at: " + folder.getAbsolutePath()
@@ -92,6 +126,19 @@ public final class WorldStructureCreator {
             return true;
         } catch (Exception e) {
             WMLogger.warn("Mirror world structure update failed path=" + folder, e);
+            return false;
+        }
+    }
+
+    public static boolean syncWorldSetting(Path worldFolder,
+                                           WorldSettingsSnapshot settings,
+                                           Setting setting) {
+        try {
+            WorldStructureApi.syncWorldSetting(worldFolder, settings, setting);
+            return true;
+        } catch (Exception e) {
+            WMLogger.warn("Could not sync mirror world setting=" + setting
+                    + " path=" + worldFolder, e);
             return false;
         }
     }

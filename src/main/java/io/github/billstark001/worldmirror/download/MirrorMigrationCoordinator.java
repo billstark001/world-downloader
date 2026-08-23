@@ -3,6 +3,7 @@ package io.github.billstark001.worldmirror.download;
 import io.github.billstark001.worldmirror.io.LegacyVoidChunkCleanup;
 import io.github.billstark001.worldmirror.io.MirrorWorldgenAssets;
 import io.github.billstark001.worldmirror.io.WorldStructureCreator;
+import io.github.billstark001.worldmirror.io.WorldSettingsSnapshot;
 import io.github.billstark001.worldmirror.util.WMLogger;
 import net.minecraft.SharedConstants;
 
@@ -101,7 +102,8 @@ public final class MirrorMigrationCoordinator {
                     normalized,
                     displayName(normalized, plan.metadata()),
                     plan.migrateWorldgen(),
-                    plan.refreshAssets());
+                    plan.refreshAssets(),
+                    WorldSettingsSnapshot.defaults());
             if (!created) {
                 return Result.failure("worldgen_write_failed");
             }

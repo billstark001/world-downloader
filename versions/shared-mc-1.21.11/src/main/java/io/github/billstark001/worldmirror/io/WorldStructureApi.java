@@ -1,6 +1,7 @@
 package io.github.billstark001.worldmirror.io;
 
 import net.minecraft.SharedConstants;
+import net.minecraft.client.multiplayer.ClientLevel;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.nbt.IntArrayTag;
 import net.minecraft.nbt.ListTag;
@@ -34,16 +35,18 @@ final class WorldStructureApi {
     }
 
     static void createInitialWorld(Path worldFolder, String levelName, UUID playerId,
-                                   CompoundTag worldGenSettings) throws Exception {
+                                   CompoundTag worldGenSettings,
+                                   WorldSettingsSnapshot settings) throws Exception {
         writeLevelData(worldFolder.resolve("level.dat"),
-                createLevelData(levelName, 0, 80, 0, worldGenSettings));
+                createLevelData(levelName, 0, 80, 0, worldGenSettings, settings));
     }
 
     static void writeSpawnedLevelData(Path worldFolder, String levelName, UUID playerId,
                                       int spawnX, int spawnY, int spawnZ,
-                                      CompoundTag worldGenSettings) throws Exception {
+                                      CompoundTag worldGenSettings,
+                                      WorldSettingsSnapshot settings) throws Exception {
         writeLevelData(worldFolder.resolve("level.dat"),
-                createLevelData(levelName, spawnX, spawnY, spawnZ, worldGenSettings));
+                createLevelData(levelName, spawnX, spawnY, spawnZ, worldGenSettings, settings));
     }
 
     static void updateOwnedLevelData(Path worldFolder, boolean migrateWorldgen,
@@ -61,8 +64,27 @@ final class WorldStructureApi {
         // Minecraft 1.21.11 does not use data/minecraft/world_clocks.dat.
     }
 
+    static WorldSettingsSnapshot captureWorldSettings(ClientLevel world) {
+        return new WorldSettingsSnapshot(
+                world.getGameTime(), world.getDayTime(),
+                world.getRainLevel(1.0F) > 0.0F,
+                world.getThunderLevel(1.0F) > 0.0F,
+                world.getDifficulty().getId());
+    }
+
+    static void syncWorldSetting(Path worldFolder, WorldSettingsSnapshot settings,
+                                 WorldStructureCreator.Setting setting) throws Exception {
+        Path levelDat = worldFolder.resolve("level.dat");
+        CompoundTag root = NbtIo.readCompressed(levelDat, NbtAccounter.unlimitedHeap());
+        CompoundTag data = root.getCompoundOrEmpty("Data");
+        applyWorldSetting(data, settings, setting);
+        root.put("Data", data);
+        WorldStructureCreator.writeCompressedAtomically(levelDat, root);
+    }
+
     private static CompoundTag createLevelData(String levelName, int spawnX, int spawnY,
-                                               int spawnZ, CompoundTag worldGenSettings) {
+                                               int spawnZ, CompoundTag worldGenSettings,
+                                               WorldSettingsSnapshot settings) {
         CompoundTag data = new CompoundTag();
         data.putInt("DataVersion", SharedConstants.getCurrentVersion().dataVersion().version());
         data.putString("LevelName", WorldStructureCreator.resolvedLevelName(levelName));
@@ -72,18 +94,39 @@ final class WorldStructureApi {
         data.putInt("GameType", 1);
         data.putBoolean("allowCommands", true);
         data.putBoolean("hardcore", false);
-        data.putInt("Difficulty", 0);
+        data.putByte("Difficulty", (byte) settings.difficultyId());
         data.putBoolean("DifficultyLocked", false);
         data.put("WorldGenSettings", worldGenSettings);
         data.put("DataPacks", createDataPacks());
         data.put("spawn", createSpawnSettings(spawnX, spawnY, spawnZ));
-        data.putLong("Time", 6000L);
-        data.putLong("DayTime", 6000L);
+        data.putLong("Time", settings.gameTime());
+        data.putLong("DayTime", settings.dayTime());
+        applyWeather(data, settings);
         data.putLong("LastPlayed", System.currentTimeMillis());
         data.put("WorldBorder", createWorldBorder());
         data.put("game_rules", createGameRules());
         data.put("Player", WorldStructureCreator.createPlayerData(spawnX, spawnY, spawnZ));
         return data;
+    }
+
+    private static void applyWorldSetting(CompoundTag data, WorldSettingsSnapshot settings,
+                                          WorldStructureCreator.Setting setting) {
+        switch (setting) {
+            case TIME -> {
+                data.putLong("Time", settings.gameTime());
+                data.putLong("DayTime", settings.dayTime());
+            }
+            case WEATHER -> applyWeather(data, settings);
+            case DIFFICULTY -> data.putByte("Difficulty", (byte) settings.difficultyId());
+        }
+    }
+
+    private static void applyWeather(CompoundTag data, WorldSettingsSnapshot settings) {
+        data.putInt("clearWeatherTime", settings.raining() ? 0 : 6_000);
+        data.putInt("rainTime", settings.raining() ? 6_000 : 0);
+        data.putBoolean("raining", settings.raining());
+        data.putInt("thunderTime", settings.thundering() ? 6_000 : 0);
+        data.putBoolean("thundering", settings.thundering());
     }
 
     private static void writeLevelData(Path file, CompoundTag data) throws Exception {
