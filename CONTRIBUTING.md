@@ -53,6 +53,28 @@ fields should describe a queue, stage duration, volume, memory/GC delta, or
 failure count and should preserve existing field names. Individual slow-stage
 records must also honor the configured threshold.
 
+The periodic snapshot is session-scoped. Capture latency fields report bounded
+samples with average, p95, p99 and maximum values; capture-hint counters are
+grouped by reason; unload capture is measured separately; and GC deltas are
+reported per collector so concurrent and stop-the-world activity are not merged.
+`captureReasonLatency` entries use `reason:count/avg/p95/p99/max` in
+microseconds. Diagnostic slow-capture records are rate-limited by origin and
+bounded reason; do not emit a message whenever a short capture queue drains.
+Export timing includes post-flush region verification. Keep all of these fields
+bounded in memory and reset them when a new download session starts.
+Gameplay frame spacing and World Mirror's own tick-handler time are measured
+separately: capture timing alone cannot distinguish serialization cost from a GC
+pause that happened during the same call. Each diagnostic export reports its
+trigger and stage timings; periodic snapshots report worker duty time, capture
+budget overruns, suppressed automatic requests, and deferred explicit-request
+coalescing.
+
+Region files are not durable merely because `flush()` returned. New region-write
+paths must validate the Anvil location table, close and reopen the file, decode
+each staged entry, and only then advance the SQLite durability index. Any entry
+that fails validation remains dirty for retry, and stale durability rows for an
+unreadable entry must be removed.
+
 Before merging a logging change, search the complete source tree for direct
 console/logging calls, check that recurring failures are limited, verify that
 exceptions retain their cause, and build every supported target. Do not launch

@@ -87,16 +87,16 @@ is also available from *Mod Menu → World Mirror → Settings*.
 | Setting | Values | Default |
 |---------|--------|---------|
 | Save location | `Downloaded Folder` / `Saves Folder` | `Downloaded Folder` |
-| Sync interval | 5–600 s | 30 s |
+| Sync interval / adaptive maximum durability latency | 5–600 s | 30 s |
 | Download pipeline | `Stable Periodic` / `Experimental Adaptive` | `Stable Periodic` |
 | Conflict strategy | `Overwrite` / `Ignore` / `Manual` | `Overwrite` |
 | Maximum cached chunks | 0–12800; 0 disables the limit | 0 |
 | Maximum cache distance | 0–64 chunks; 0 disables the limit | 32 |
 | Maximum cache age | 0–14400 s; 0 disables the limit | 1800 s |
 | Invalidate cache after export | `true` / `false` | `false` |
-| Main-thread capture budget | 250–5000 µs/tick | 1500 µs/tick |
+| Main-thread capture scheduling ceiling | 250–5000 µs/tick | 1500 µs/tick |
 | Adaptive dirty high watermark | 32–8192 chunks | 512 chunks |
-| Adaptive maximum durability latency | 1–60 s | 5 s |
+| Adaptive high-watermark export cooldown | 1–60 s | 10 s |
 | Maximum pending capture hints | 512–32768 | 8192 |
 | Performance diagnostic logging | `true` / `false` | `false` |
 | Slow-region diagnostic threshold | 50–10000 ms | 500 ms |
