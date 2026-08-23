@@ -3,12 +3,23 @@ package io.github.billstark001.worldmirror.io;
 import com.mojang.serialization.Lifecycle;
 import net.minecraft.SharedConstants;
 import net.minecraft.core.BlockPos;
+import net.minecraft.core.Holder;
+import net.minecraft.core.HolderGetter;
+import net.minecraft.core.HolderOwner;
+import net.minecraft.core.HolderSet;
+import net.minecraft.core.Registry;
+import net.minecraft.core.registries.Registries;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.nbt.ListTag;
 import net.minecraft.nbt.NbtAccounter;
 import net.minecraft.nbt.NbtIo;
 import net.minecraft.nbt.NbtUtils;
+import net.minecraft.nbt.NbtOps;
 import net.minecraft.nbt.StringTag;
+import net.minecraft.nbt.Tag;
+import net.minecraft.resources.ResourceKey;
+import net.minecraft.resources.RegistryOps;
+import net.minecraft.tags.TagKey;
 import net.minecraft.world.Difficulty;
 import net.minecraft.world.level.GameType;
 import net.minecraft.world.level.Level;
@@ -18,12 +29,54 @@ import net.minecraft.world.level.gamerules.GameRules;
 import net.minecraft.world.level.storage.LevelData;
 import net.minecraft.world.level.storage.LevelStorageSource;
 import net.minecraft.world.level.storage.PrimaryLevelData;
+import net.minecraft.world.clock.PackedClockStates;
+import net.minecraft.world.clock.WorldClock;
+import net.minecraft.world.clock.WorldClocks;
 
+import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.Map;
+import java.util.Set;
+import java.util.Optional;
 import java.util.UUID;
 
 /** Minecraft 26.x translation for level.dat and the dimension-first save layout. */
 final class WorldStructureApi {
+    private static final HolderOwner<WorldClock> WORLD_CLOCK_OWNER = new HolderOwner<>() { };
+    private static final Map<ResourceKey<WorldClock>, Holder.Reference<WorldClock>> WORLD_CLOCKS =
+            Map.of(
+                    WorldClocks.OVERWORLD,
+                    Holder.Reference.createStandAlone(WORLD_CLOCK_OWNER, WorldClocks.OVERWORLD),
+                    WorldClocks.THE_END,
+                    Holder.Reference.createStandAlone(WORLD_CLOCK_OWNER, WorldClocks.THE_END));
+    private static final HolderGetter<WorldClock> WORLD_CLOCK_GETTER =
+            new HolderGetter<>() {
+                @Override
+                public Optional<Holder.Reference<WorldClock>> get(
+                        ResourceKey<WorldClock> resourceKey) {
+                    return Optional.ofNullable(WORLD_CLOCKS.get(resourceKey));
+                }
+
+                @Override
+                public Optional<HolderSet.Named<WorldClock>> get(TagKey<WorldClock> tagKey) {
+                    return Optional.empty();
+                }
+            };
+    private static final RegistryOps.RegistryInfo<WorldClock> WORLD_CLOCK_REGISTRY =
+            new RegistryOps.RegistryInfo<>(
+                    WORLD_CLOCK_OWNER, WORLD_CLOCK_GETTER, Lifecycle.stable());
+    private static final RegistryOps<Tag> WORLD_CLOCK_OPS = RegistryOps.create(
+            NbtOps.INSTANCE, new RegistryOps.RegistryInfoLookup() {
+                @Override
+                @SuppressWarnings("unchecked")
+                public <T> Optional<RegistryOps.RegistryInfo<T>> lookup(
+                        ResourceKey<? extends Registry<? extends T>> registryKey) {
+                    if (!Registries.WORLD_CLOCK.equals(registryKey)) return Optional.empty();
+                    return Optional.of((RegistryOps.RegistryInfo<T>)
+                            (RegistryOps.RegistryInfo<?>) WORLD_CLOCK_REGISTRY);
+                }
+            });
+
     private WorldStructureApi() { }
 
     static int dataPackFormat() {
@@ -80,6 +133,20 @@ final class WorldStructureApi {
             writeSavedData(worldFolder.resolve("data/minecraft/world_gen_settings.dat"),
                     worldGenSettings);
         }
+    }
+
+    /** Repairs only the extra {@code data.clocks} wrapper emitted by World Mirror 0.4.0. */
+    static void repairOwnedSavedData(Path worldFolder) throws Exception {
+        Path file = worldFolder.resolve("data/minecraft/world_clocks.dat");
+        if (!Files.isRegularFile(file)) return;
+        CompoundTag root = NbtIo.readCompressed(file, NbtAccounter.unlimitedHeap());
+        CompoundTag data = root.getCompoundOrEmpty("data");
+        if (!data.keySet().equals(Set.of("clocks"))) return;
+        CompoundTag nested = data.getCompoundOrEmpty("clocks");
+        if (!nested.keySet().equals(
+                Set.of("minecraft:overworld", "minecraft:the_end"))) return;
+        root.put("data", roundTripWorldClocksData(nested));
+        WorldStructureCreator.writeCompressedAtomically(file, root);
     }
 
     private static PrimaryLevelData createLevelData(String levelName,
@@ -154,12 +221,10 @@ final class WorldStructureApi {
     }
 
     private static CompoundTag createWorldClocksData() {
-        CompoundTag clocks = new CompoundTag();
         CompoundTag states = new CompoundTag();
         states.put("minecraft:overworld", createClockState(6000L));
         states.put("minecraft:the_end", createClockState(6000L));
-        clocks.put("clocks", states);
-        return clocks;
+        return roundTripWorldClocksData(states);
     }
 
     private static CompoundTag createClockState(long totalTicks) {
@@ -169,5 +234,15 @@ final class WorldStructureApi {
         state.putFloat("rate", 1.0F);
         state.putBoolean("paused", false);
         return state;
+    }
+
+    static CompoundTag roundTripWorldClocksData(CompoundTag data) {
+        PackedClockStates decoded = PackedClockStates.CODEC.parse(
+                WORLD_CLOCK_OPS, data).getOrThrow();
+        Tag encoded = PackedClockStates.CODEC.encodeStart(WORLD_CLOCK_OPS, decoded).getOrThrow();
+        if (!(encoded instanceof CompoundTag compound)) {
+            throw new IllegalStateException("Packed clock codec did not produce a compound tag");
+        }
+        return compound;
     }
 }

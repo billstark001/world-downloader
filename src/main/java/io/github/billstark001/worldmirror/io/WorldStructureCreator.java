@@ -13,7 +13,10 @@ import net.minecraft.nbt.NbtUtils;
 import java.io.File;
 import java.io.FileOutputStream;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.AtomicMoveNotSupportedException;
+import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
 import java.util.UUID;
 
 /** Version-neutral orchestration for creating and updating playable mirror saves. */
@@ -77,6 +80,7 @@ public final class WorldStructureCreator {
                 WMLogger.debug("World structure created at: " + folder.getAbsolutePath()
                         + " (name: " + resolvedLevelName(levelName) + ")");
             } else {
+                WorldStructureApi.repairOwnedSavedData(worldFolder);
                 if (migrateWorldgen || refreshAssets) {
                     MirrorWorldgenAssets.install(worldFolder, WorldStructureApi.dataPackFormat());
                     WorldStructureApi.updateOwnedLevelData(worldFolder, migrateWorldgen,
@@ -101,6 +105,22 @@ public final class WorldStructureCreator {
         if (parent != null) parent.mkdirs();
         try (FileOutputStream output = new FileOutputStream(file)) {
             NbtIo.writeCompressed(tag, output);
+        }
+    }
+
+    static void writeCompressedAtomically(Path file, CompoundTag tag) throws Exception {
+        Files.createDirectories(file.getParent());
+        Path temporary = Files.createTempFile(file.getParent(), file.getFileName().toString(), ".tmp");
+        try {
+            writeCompressed(temporary.toFile(), tag);
+            try {
+                Files.move(temporary, file, StandardCopyOption.ATOMIC_MOVE,
+                        StandardCopyOption.REPLACE_EXISTING);
+            } catch (AtomicMoveNotSupportedException unsupported) {
+                Files.move(temporary, file, StandardCopyOption.REPLACE_EXISTING);
+            }
+        } finally {
+            Files.deleteIfExists(temporary);
         }
     }
 

@@ -146,6 +146,8 @@ public final class MirrorMigrationCoordinator {
             addFileIfPresent(zip, worldFolder, worldFolder.resolve(WorldMetadata.FILE_NAME));
             addFileIfPresent(zip, worldFolder,
                     worldFolder.resolve("data/minecraft/world_gen_settings.dat"));
+            addFileIfPresent(zip, worldFolder,
+                    worldFolder.resolve("data/minecraft/world_clocks.dat"));
             addTreeIfPresent(zip, worldFolder,
                     worldFolder.resolve("datapacks").resolve(MirrorWorldgenAssets.PACK_DIRECTORY));
             for (LegacyVoidChunkCleanup.RegionPlan region : voidCleanup.regions()) {

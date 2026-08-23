@@ -57,6 +57,10 @@ final class WorldStructureApi {
         WorldStructureCreator.writeCompressed(levelDat.toFile(), root);
     }
 
+    static void repairOwnedSavedData(Path worldFolder) {
+        // Minecraft 1.21.11 does not use data/minecraft/world_clocks.dat.
+    }
+
     private static CompoundTag createLevelData(String levelName, int spawnX, int spawnY,
                                                int spawnZ, CompoundTag worldGenSettings) {
         CompoundTag data = new CompoundTag();
