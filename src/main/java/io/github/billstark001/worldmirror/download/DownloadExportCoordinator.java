@@ -387,7 +387,26 @@ final class DownloadExportCoordinator {
                 return;
             }
             deferredCoalesced.incrementAndGet();
-            pending = new Request(preferredTrigger(request.trigger(), pending.trigger()),
+            pending = mergeDeferredRequests(pending, request);
+        }
+    }
+
+    static Request mergeDeferredRequests(Request pending, Request request) {
+        if (hasPreparedWorldSnapshot(pending)) {
+            return new Request(preferredTrigger(request.trigger(), pending.trigger()),
+                    pending.shouldNotify() || request.shouldNotify(), true,
+                    pending.preferredSourceId(), pending.preferredSourceType(),
+                    pending.containerSnapshot(), pending.entitySnapshot(),
+                    pending.terrainSnapshot());
+        }
+        if (hasPreparedWorldSnapshot(request)) {
+            return new Request(preferredTrigger(request.trigger(), pending.trigger()),
+                    pending.shouldNotify() || request.shouldNotify(), true,
+                    request.preferredSourceId(), request.preferredSourceType(),
+                    request.containerSnapshot(), request.entitySnapshot(),
+                    request.terrainSnapshot());
+        }
+        return new Request(preferredTrigger(request.trigger(), pending.trigger()),
                     pending.shouldNotify() || request.shouldNotify(),
                     pending.preCaptureAlreadyDone() && request.preCaptureAlreadyDone(),
                     choosePreferred(request.preferredSourceId(), pending.preferredSourceId()),
@@ -398,7 +417,10 @@ final class DownloadExportCoordinator {
                             ? request.entitySnapshot() : pending.entitySnapshot(),
                     request.terrainSnapshot() != null
                             ? request.terrainSnapshot() : pending.terrainSnapshot());
-        }
+    }
+
+    private static boolean hasPreparedWorldSnapshot(Request request) {
+        return request.entitySnapshot() != null || request.terrainSnapshot() != null;
     }
 
     private static Request withContainerSnapshot(Request request) {
