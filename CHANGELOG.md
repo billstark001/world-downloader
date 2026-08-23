@@ -5,6 +5,31 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [0.4.1] — 2026-08-23
+
+### Changed
+
+- Entity capture now uses Minecraft's vanilla serializer for complete top-level entities
+  and passenger trees instead of a hand-written `ValueOutput` adapter.
+- Entity persistence now models versioned partial and complete observations independently
+  from terrain-cache eviction, and merges affected UUIDs through atomic entity-region
+  replacements.
+
+### Fixed
+
+- Reconciled UUID moves across chunks and regions, recursively removed stale passenger
+  copies, preserved unobserved on-disk entities during partial observations, and retained
+  failed entity revisions for retry.
+- Preserved immutable terrain, entity, and container snapshots when a stop-time export is
+  deferred behind an active worker, preventing disconnect races from losing the final
+  observed state.
+- Minecraft 26.1.2 and 26.2 saves now write `world_clocks.dat` in the direct
+  `data.<clock-id>.<state>` shape accepted by `PackedClockStates.CODEC`. Existing files
+  with World Mirror 0.4.0's exact extra `data.clocks` wrapper are validated and repaired
+  atomically; unrelated clock payloads are not modified.
+
+---
+
 ## [0.4.0] — 2026-08-23
 
 ### Added

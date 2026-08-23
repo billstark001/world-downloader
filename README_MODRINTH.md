@@ -54,7 +54,9 @@ with **L** does not delete mirror files already written to disk.
 - Block entities such as signs, banners, player heads, beacons, and lecterns.
 - Contents of containers you open while recording, including double chests.
 - Best-effort snapshots of client-visible mobs, vehicles, paintings, item frames, armour
-  stands, and dropped items.
+  stands, dropped items, and rider/passenger groups. Moves and despawns are reconciled in
+  areas the client can safely observe without deleting last-known entities from unloaded
+  chunks.
 - Changes over time, with periodic background exports and an optional experimental
   adaptive mode for busier sessions.
 

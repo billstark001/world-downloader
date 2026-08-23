@@ -1,6 +1,6 @@
 # World Mirror
 
-**Version:** 0.4.0 · **Minecraft:** 1.21.11, 26.1.2, 26.2 · **Loader:** Fabric
+**Version:** 0.4.1 · **Minecraft:** 1.21.11, 26.1.2, 26.2 · **Loader:** Fabric
 
 A client-side Fabric mod that mirrors the world you are playing on a multiplayer server —
 or even a singleplayer world — into a standard local save. As you explore, the mod captures
@@ -18,7 +18,7 @@ in Minecraft's singleplayer world list.
 | **Stable and adaptive pipelines** | Hardened periodic sync remains the default. An opt-in adaptive mode reacts to coalesced chunk changes with bounded durability latency. Both use main-thread capture budgets and low-memory, one-region-at-a-time background writes. |
 | **Timestamp- and source-aware writes** | SQLite records successful per-chunk write times and source priorities. Older snapshots and updates outranked by a third-party source are skipped. |
 | **Multi-dimension support** | Overworld, Nether, End, and custom dimensions are exported using the save layout required by the selected Minecraft version. |
-| **Entity capture** | Client-visible non-player entities are snapshotted with their type IDs into per-dimension entity region files. Moves and despawns are reconciled while the affected chunks remain loaded; server-only state is necessarily unavailable. |
+| **Entity capture** | Vanilla-serialized, client-visible non-player entities and passenger trees are merged into per-dimension entity region files. Versioned partial/complete observations reconcile UUID moves and safe despawns without erasing last-known data from unloaded chunks. |
 | **Container tracking** | The mod intercepts inventory packets when you open a chest, barrel, hopper, furnace, or any other container and saves the item stacks. They are merged into the block entity NBT on export. Double chests are handled correctly (each half is saved to its own position). |
 | **Block entity data** | Signs (text), beacons (effects), banners (patterns), player heads (owner), lecterns (stored book), and all other block entities whose data the server sends to the client are persisted through Minecraft's chunk serialization path. |
 | **World–mirror mapping** | Every detected server address or singleplayer world name is persistently mapped to a sanitised local folder name in `config/worldmirror/mirrors.json`. Different aliases for the same server are currently separate source IDs. |
@@ -167,6 +167,11 @@ Each dimension directory contains the target version's `region/`, `entities/`, a
 `poi/` structure. World Mirror also creates the player-data and saved-data directories
 required by that version.
 
+Minecraft 26.1.2 and 26.2 also use `data/minecraft/world_clocks.dat`. World Mirror 0.4.1
+generates its payload through Minecraft's `PackedClockStates` codec and automatically
+repairs the exact extra `data.clocks` wrapper produced by World Mirror 0.4.0. Other clock
+payload shapes are left untouched.
+
 `worldmirror_meta.json` fields:
 
 | Field | Description |
@@ -191,16 +196,20 @@ into SQLite on the first sync after upgrade, and the JSON field is removed.
 
 ## Entity Serialization
 
-Before an export, World Mirror snapshots non-player entities currently visible to the
-client and writes their client-known state to per-dimension `entities/r.X.Z.mca` files.
-This covers common mobs, vehicles, paintings, item frames, armour stands, and dropped
-items on a best-effort basis.
+On the game thread, World Mirror uses Minecraft's vanilla entity serializer for each
+visible top-level non-player entity and its complete passenger tree. Versioned updates
+are kept independently from the terrain cache, then merged into per-dimension
+`entities/r.X.Z.mca` files with atomic region replacement. This covers common mobs,
+vehicles, paintings, item frames, armour stands, and dropped items on a best-effort basis.
 
 Entity output is not a server-authoritative backup. Fields never sent to the
 client—such as AI internals and unopened villager trades—cannot be reconstructed.
-World Mirror writes type IDs and clears moved/despawned entities when their previous
-chunks are still loaded. When a chunk unloads, its last known entities are preserved
-because a client-side mod cannot distinguish every unload from a server-side removal.
+UUID indexing removes stale copies when an entity or passenger tree crosses chunk or
+region boundaries. Complete observations can clear moved/despawned entities; partial
+observations only upsert what the client positively sees. When a chunk unloads, its last
+known entities are preserved because a client-side mod cannot distinguish every unload
+from a server-side removal. Failed entity-region writes retain their exact revisions for
+retry, including a stop-time snapshot deferred behind an active export.
 
 ---
 
@@ -224,7 +233,7 @@ as `container.chest` are not persisted as custom names.
 
 ---
 
-## Capture Limits in 0.4.0
+## Capture Limits in 0.4.1
 
 World Mirror is client-side and cannot reconstruct data the server never sends. In
 particular:
@@ -253,7 +262,7 @@ Choose the World Mirror JAR that exactly matches your Minecraft version:
 
 1. Install [Fabric Loader](https://fabricmc.net/use/) 0.19.3 or newer.
 2. Install the matching [Fabric API](https://modrinth.com/mod/fabric-api).
-3. Put the matching World Mirror 0.4.0 JAR in `mods/`.
+3. Put the matching World Mirror 0.4.1 JAR in `mods/`.
 4. *(Optional)* Install [Mod Menu](https://modrinth.com/mod/modmenu) for a title-screen settings entry.
 5. *(Optional)* For the Xaero overlay, install both
    [Xaero's World Map](https://modrinth.com/mod/xaeros-world-map) 1.40.x–1.44.x and the
@@ -384,15 +393,18 @@ When adding or removing a Minecraft target:
   serialization on the game thread, and `ChunkListener` owns dimension-aware captured/dirty
   state. Source transitions clear live chunk, entity, and container state; immutable dirty
   snapshots retain their own lighting overlays until their export finishes.
-- Container data is observed in `ContainerMixin` and stored in `ContainerTracker`. Entities
-  are snapshot-serialized on the game thread by `EntityTracker` before each export.
+- Container data is observed in `ContainerMixin` and stored in `ContainerTracker`.
+  `EntityTracker` performs vanilla serialization on the game thread;
+  `EntitySnapshotStore` owns versioned partial/complete reconciliation independently of
+  terrain eviction; `EntityRegionWriter` performs UUID-aware atomic entity-region merges.
 - Built-in and Xaero rendering share `ChunkMapView` and use asynchronous status
   snapshots, viewport-indexed lookups, low-zoom bucket aggregation, coalesced fill runs,
   and merged boundaries.
 - Xaero's World Map overlay is optional and uses Xaero World Map Bridge's public overlay API; the bridge owns Xaero-specific mixins and fallbacks.
-- The actual disk I/O runs on the single `WM-Export` worker. Region validation and the
-  SQLite durability-index commit must succeed before captured revisions are acknowledged;
-  failed conflict application retains the conflict MCA for retry.
+- The actual disk I/O runs on the single `WM-Export` worker. Terrain-region validation and
+  the SQLite durability-index commit must succeed before terrain revisions are
+  acknowledged. Entity revisions are acknowledged only after their atomic entity-region
+  merge succeeds; failed conflict application retains the conflict MCA for retry.
 - The dirty-check (`CapturedChunk.capturedAtMs` vs `data/world_mirror.sqlite`) ensures
   unchanged chunks are not re-written on every periodic sync.
 - Version-neutral `WorldStructureCreator` and `StatusScreen` bodies live in root `src`.

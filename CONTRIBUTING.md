@@ -25,6 +25,9 @@ The download package follows the same ownership rule:
 - `DownloadExportCoordinator` owns request serialization, snapshots, durability commits,
   retry acknowledgment, and the export worker.
 - `MirrorMapping` owns output-path selection, claiming, and per-world path settings.
+- `EntityTracker` owns game-thread vanilla serialization and observation boundaries;
+  `EntitySnapshotStore` owns versioned partial/complete reconciliation; and
+  `EntityRegionWriter` owns UUID-aware atomic entity-region merging.
 
 Avoid adding queue locks, region transactions, strategy-specific state, or path-claiming
 logic back to the manager. Prefer extending an existing owner over adding a one-method
@@ -35,6 +38,18 @@ transitions must not allow cached chunks, entities, containers, or lighting over
 leak into another source. Background work receives immutable snapshots that remain valid
 after live caches are cleared. A region write is durable only after file validation and
 the SQLite index commit; failed conflict application must retain its conflict file.
+
+Entity dirtiness is independent from terrain-cache retention. Never prune entity updates
+because a terrain entry was evicted. A successful atomic entity-region replacement
+acknowledges only the exact captured entity revisions it represents. Stop-time exports
+deferred behind an active worker must carry immutable terrain, entity, and container
+snapshots so disconnect or a new source cannot change their meaning.
+
+Version-specific saved-data repairs belong in `WorldStructureApi`. Match only a known
+World Mirror-owned malformed shape, preserve unrelated or extended payloads, replace the
+file atomically, and exercise the target Minecraft codec in a round-trip test. A target
+that does not use that saved-data file should provide only the no-op adapter required by
+the shared orchestrator.
 
 ## Documentation and release policy
 
