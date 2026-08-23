@@ -83,8 +83,8 @@ public final class DownloadManager {
     private static long clientTick = 0;
     private static long nextAutomaticExportAttemptMs;
     private static volatile boolean mirrorCaptureWarningShown;
-    private static volatile ModConfig.DownloadPipelineMode activePipelineMode =
-            ModConfig.DownloadPipelineMode.STABLE_PERIODIC;
+    private static volatile DownloadPipeline activePipeline =
+            DownloadPipeline.create(ModConfig.DownloadPipelineMode.STABLE_PERIODIC);
     private static long coalescedCaptureHints;
     private static long droppedCaptureHints;
     private static final Map<String, CaptureHintCounters> captureHintsByReason = new HashMap<>();
@@ -118,8 +118,6 @@ public final class DownloadManager {
     private static volatile boolean recordPerformanceTimings;
     private static volatile long lastWorldFrameNs;
     private static final Map<String, GcSnapshot> lastGcByCollector = new HashMap<>();
-    private static final AdaptiveExportScheduler adaptiveExportScheduler =
-            new AdaptiveExportScheduler();
     private static final ThreadPoolExecutor exportExecutor = new ThreadPoolExecutor(
             0, 1, 30L, TimeUnit.SECONDS, new LinkedBlockingQueue<>(1), runnable -> {
                 Thread thread = new Thread(runnable, "WM-Export");
@@ -225,7 +223,7 @@ public final class DownloadManager {
             PendingChunkCapture oldest = pendingCaptures.peekFirst();
             long age = oldest == null ? 0L
                     : Math.max(0L, System.currentTimeMillis() - oldest.enqueuedAtMs());
-            return new PipelineMetrics(activePipelineMode, pendingCaptures.size(),
+            return new PipelineMetrics(activePipeline.mode(), pendingCaptures.size(),
                     ChunkListener.getDirtyCount(), age, coalescedCaptureHints,
                     droppedCaptureHints, lastExportMillis,
                     lastExportWritten, lastExportSettled, lastExportUnreadable,
@@ -519,23 +517,14 @@ public final class DownloadManager {
         int dirty = ChunkListener.getDirtyCount();
         boolean entityDirty = entityRevision.get() > durableEntityRevision.get();
         boolean hasDurabilityWork = dirty > 0 || entityDirty;
-        long maximumLatencyMs = (long) cfg.syncIntervalSeconds * 1_000L;
-        ExportTrigger automaticTrigger = null;
-        if (activePipelineMode == ModConfig.DownloadPipelineMode.EXPERIMENTAL_ADAPTIVE) {
-            AdaptiveExportScheduler.Decision decision = adaptiveExportScheduler.evaluate(
-                    now, dirty, hasDurabilityWork,
-                    cfg.performance.adaptiveDirtyHighWatermark,
-                    (long) cfg.performance.adaptiveExportCooldownSeconds * 1_000L,
-                    maximumLatencyMs);
-            automaticTrigger = switch (decision) {
-                case HIGH_WATERMARK -> ExportTrigger.ADAPTIVE_HIGH_WATERMARK;
-                case MAX_LATENCY -> ExportTrigger.ADAPTIVE_MAX_LATENCY;
-                case NONE -> null;
-            };
-        } else if (hasDurabilityWork
-                && adaptiveExportScheduler.maximumLatencyReached(now, maximumLatencyMs)) {
-            automaticTrigger = ExportTrigger.PERIODIC;
-        }
+        DownloadPipeline.Decision decision = activePipeline.evaluate(
+                now, dirty, hasDurabilityWork, cfg);
+        ExportTrigger automaticTrigger = switch (decision) {
+            case PERIODIC -> ExportTrigger.PERIODIC;
+            case HIGH_WATERMARK -> ExportTrigger.ADAPTIVE_HIGH_WATERMARK;
+            case MAX_LATENCY -> ExportTrigger.ADAPTIVE_MAX_LATENCY;
+            case NONE -> null;
+        };
         if (automaticTrigger != null && now >= nextAutomaticExportAttemptMs) {
             boolean started = startBackgroundSync(client, new ExportRequest(
                     automaticTrigger, false, false, null, null, null));
@@ -832,18 +821,18 @@ public final class DownloadManager {
 
     private static void activateDownload(Minecraft client, String reason) {
         if (!currentActive.compareAndSet(false, true)) return;
-        activePipelineMode = ModConfig.get().pipelineMode;
+        activePipeline = DownloadPipeline.create(ModConfig.get().pipelineMode);
         resetDiagnosticSession();
         diagnosticSessionActive = ModConfig.get().performance.diagnosticPerformanceLogging;
         recordPerformanceTimings = diagnosticSessionActive;
         entityRevision.incrementAndGet();
         long nowMs = System.currentTimeMillis();
-        adaptiveExportScheduler.reset(nowMs);
+        activePipeline.reset(nowMs);
         nextAutomaticExportAttemptMs = 0L;
         lastCacheEvictionMs = nowMs;
         if (client.level != null) captureLoadedChunksAsync(client);
         WMPlayerMessages.sendOverlayMessage(client.player, Component.translatable("msg.worldmirror.downloadStart"));
-        WMLogger.info("Download activated with pipeline=" + activePipelineMode
+        WMLogger.info("Download activated with pipeline=" + activePipeline.mode()
                 + (reason == null ? "" : " by " + reason));
     }
 
@@ -1029,12 +1018,11 @@ public final class DownloadManager {
         int totalChunks = snapshot.chunks().values().stream().mapToInt(Map::size).sum();
         WMLogger.debug("Queued export: trigger=" + request.trigger()
                 + " dirtySnapshot=" + totalChunks + " dimensions="
-                + snapshot.chunks().size() + " pipeline=" + activePipelineMode);
+                + snapshot.chunks().size() + " pipeline=" + activePipeline.mode());
 
         // ── Background thread ─────────────────────────────────────────────────
         exportInProgress.set(true);
-        adaptiveExportScheduler.onExportStarted(System.currentTimeMillis(), totalChunks,
-                ModConfig.get().performance.adaptiveDirtyHighWatermark);
+        activePipeline.onExportStarted(System.currentTimeMillis(), totalChunks, ModConfig.get());
         final Path finalWorldFolder = worldFolder;
         final boolean diagnosticExport =
                 ModConfig.get().performance.diagnosticPerformanceLogging;
@@ -1163,7 +1151,7 @@ public final class DownloadManager {
                             ? -1L : (cpuNowNs - exportStartedCpuNs) / 1_000_000L;
                     ChunkExporter.ExportTimings timings = result.timings();
                     WMLogger.info("[perf] export trigger=" + request.trigger()
-                            + " pipeline=" + activePipelineMode
+                            + " pipeline=" + activePipeline.mode()
                             + " dirtySnapshot=" + totalChunks
                             + " written=" + totalWritten
                             + " unreadable=" + totalUnreadable
@@ -1180,7 +1168,7 @@ public final class DownloadManager {
                 }
                 WMLogger.info("Export pass complete: status="
                         + (passSuccessful ? "success" : "partial")
-                        + " pipeline=" + activePipelineMode
+                        + " pipeline=" + activePipeline.mode()
                         + " trigger=" + request.trigger()
                         + " dirtySnapshot=" + totalChunks
                         + " written=" + totalWritten
