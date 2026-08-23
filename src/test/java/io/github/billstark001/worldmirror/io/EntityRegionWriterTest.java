@@ -53,6 +53,50 @@ class EntityRegionWriterTest {
     }
 
     @Test
+    void unrelatedZeroLengthLegacyRegionDoesNotBlockEntityWrites() throws Exception {
+        Path entities = entitiesDir();
+        Files.createDirectories(entities);
+        Path legacyPlaceholder = entities.resolve("r.-1.-1.mca");
+        Files.createFile(legacyPlaceholder);
+        UUID uuid = UUID.randomUUID();
+        ChunkPos pos = new ChunkPos(0, 0);
+        EntityTracker.ChunkUpdate update = new EntityTracker.ChunkUpdate(
+                9L, EntityTracker.Observation.PARTIAL,
+                Map.of(uuid, record("minecraft:pig", uuid, Set.of(uuid))), Set.of());
+
+        Map<ResourceKey<Level>, Map<ChunkPos, Long>> result = EntityRegionWriter.write(
+                tempDir, Map.of(Level.OVERWORLD, Map.of(pos, update)));
+
+        assertEquals(9L, result.get(Level.OVERWORLD).get(pos));
+        assertEquals(0L, Files.size(legacyPlaceholder));
+        assertEquals(1, McaFileHelpers.readEntities(entities.resolve("r.0.0.mca"))
+                .getChunk(0, 0).getHandle().getCompoundList("Entities").size());
+    }
+
+    @Test
+    void zeroLengthLegacyDestinationIsAtomicallyReplaced() throws Exception {
+        Path entities = entitiesDir();
+        Files.createDirectories(entities);
+        Path destination = entities.resolve("r.0.0.mca");
+        Files.createFile(destination);
+        UUID uuid = UUID.randomUUID();
+        ChunkPos pos = new ChunkPos(0, 0);
+        EntityTracker.ChunkUpdate update = new EntityTracker.ChunkUpdate(
+                10L, EntityTracker.Observation.PARTIAL,
+                Map.of(uuid, record("minecraft:cow", uuid, Set.of(uuid))), Set.of());
+
+        Map<ResourceKey<Level>, Map<ChunkPos, Long>> result = EntityRegionWriter.write(
+                tempDir, Map.of(Level.OVERWORLD, Map.of(pos, update)));
+
+        assertEquals(10L, result.get(Level.OVERWORLD).get(pos));
+        assertTrue(Files.size(destination) >= 8_192L);
+        ListTag<CompoundTag> written = McaFileHelpers.readEntities(destination)
+                .getChunk(0, 0).getHandle().getCompoundList("Entities");
+        assertEquals(1, written.size());
+        assertEquals(Set.of(uuid), EntityRegionWriter.collectUuids(written.get(0)));
+    }
+
+    @Test
     void movingUuidRemovesOldDiskRecordAndCreatesOneNewRecord() throws Exception {
         UUID uuid = UUID.randomUUID();
         ChunkPos a = new ChunkPos(0, 0);

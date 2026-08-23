@@ -123,7 +123,7 @@ final class EntityRegionWriter {
         for (Map.Entry<RegionKey, Map<ChunkPos, MutableUpdate>> entry : byRegion.entrySet()) {
             if (!writeRegion(entitiesDir, entry.getKey(), entry.getValue())) allSucceeded = false;
         }
-        return allSucceeded;
+        return allSucceeded && verifyAffectedUuidCounts(entitiesDir, sourceUpdates);
     }
 
     private static Set<UUID> validateIncomingAndCollectUuids(
@@ -167,6 +167,10 @@ final class EntityRegionWriter {
         if (affectedUuids.isEmpty()) return;
         try (DirectoryStream<Path> files = Files.newDirectoryStream(entitiesDir, "r.*.*.mca")) {
             for (Path file : files) {
+                // Older World Mirror releases could leave empty placeholder MCA
+                // files behind. They contain no header or entity data and are
+                // semantically identical to a missing region.
+                if (Files.size(file) == 0L) continue;
                 McaEntitiesFile mca;
                 synchronized (McaWriteSupport.lockFor(file)) {
                     try {
@@ -211,7 +215,9 @@ final class EntityRegionWriter {
             McaEntitiesFile mca;
             if (Files.exists(target)) {
                 try {
-                    mca = McaFileHelpers.readEntities(target);
+                    mca = Files.size(target) == 0L
+                            ? new McaEntitiesFile(key.x(), key.z())
+                            : McaFileHelpers.readEntities(target);
                 } catch (Exception e) {
                     WMLogger.warn("Could not read existing entity region " + target.getFileName()
                             + "; refusing to overwrite it", e);
@@ -243,6 +249,7 @@ final class EntityRegionWriter {
                             + " wrote no chunks; keeping revisions dirty for retry.");
                     return false;
                 }
+                if (!verifyWrittenRegion(target, key, updates)) return false;
                 WMLogger.debug("Wrote entity region " + target.getFileName()
                         + " with " + updates.size() + " updated chunk(s).");
                 return true;
@@ -320,6 +327,137 @@ final class EntityRegionWriter {
             }
         } catch (Exception e) {
             throw new IllegalArgumentException("Failed to convert Minecraft entity NBT", e);
+        }
+    }
+
+    /** Re-opens the atomic replacement before any captured revision is acknowledged. */
+    private static boolean verifyWrittenRegion(
+            Path target,
+            RegionKey key,
+            Map<ChunkPos, MutableUpdate> updates) {
+        try {
+            McaEntitiesFile persisted = McaFileHelpers.readEntities(target);
+            if (persisted.getRegionX() != key.x() || persisted.getRegionZ() != key.z()) {
+                throw new IOException("Entity region coordinates changed after write: "
+                        + target.getFileName());
+            }
+
+            for (Map.Entry<ChunkPos, MutableUpdate> entry : updates.entrySet()) {
+                ChunkPos pos = entry.getKey();
+                MutableUpdate update = entry.getValue();
+                EntitiesChunk chunk = persisted.getChunk(
+                        pos.getRegionLocalX(), pos.getRegionLocalZ());
+                int chunkX = pos.getMinBlockX() >> 4;
+                int chunkZ = pos.getMinBlockZ() >> 4;
+                if (chunk == null || chunk.getChunkX() != chunkX || chunk.getChunkZ() != chunkZ) {
+                    throw new IOException("Entity chunk is missing or misplaced after write: " + pos);
+                }
+                ListTag<CompoundTag> roots = entityList(chunk);
+                if (roots == null) {
+                    throw new IOException("Entity list is missing after write: " + pos);
+                }
+
+                Set<UUID> expectedPresent = new HashSet<>();
+                update.upserts.values().forEach(record ->
+                        expectedPresent.addAll(record.containedUuids()));
+                Set<UUID> expectedAbsent = new HashSet<>(update.tombstones);
+                expectedAbsent.removeAll(expectedPresent);
+
+                Map<UUID, Integer> counts = countUuids(roots, expectedPresent, expectedAbsent);
+                for (UUID uuid : expectedPresent) {
+                    if (counts.getOrDefault(uuid, 0) != 1) {
+                        throw new IOException("Entity UUID was not written exactly once: " + uuid);
+                    }
+                }
+                for (UUID uuid : expectedAbsent) {
+                    if (counts.getOrDefault(uuid, 0) != 0) {
+                        throw new IOException("Entity tombstone remains after write: " + uuid);
+                    }
+                }
+                if (update.observation == EntityTracker.Observation.COMPLETE
+                        && roots.size() != update.upserts.size()) {
+                    throw new IOException("Complete entity chunk retained unexpected roots: " + pos);
+                }
+            }
+            return true;
+        } catch (Exception e) {
+            WMLogger.warn("Entity region verification failed file=" + target.getFileName()
+                    + "; keeping revisions dirty for retry", e);
+            return false;
+        }
+    }
+
+    /** Confirms the dimension-wide UUID invariant established by the pre-write scan. */
+    private static boolean verifyAffectedUuidCounts(
+            Path entitiesDir,
+            Map<ChunkPos, EntityTracker.ChunkUpdate> sourceUpdates) {
+        Set<UUID> expectedPresent = new HashSet<>();
+        Set<UUID> expectedAbsent = new HashSet<>();
+        sourceUpdates.values().forEach(update -> {
+            expectedAbsent.addAll(update.tombstones());
+            update.upserts().values().forEach(record ->
+                    expectedPresent.addAll(record.containedUuids()));
+        });
+        expectedAbsent.removeAll(expectedPresent);
+        Set<UUID> affected = new HashSet<>(expectedPresent);
+        affected.addAll(expectedAbsent);
+        if (affected.isEmpty()) return true;
+
+        Map<UUID, Integer> counts = new HashMap<>();
+        try (DirectoryStream<Path> files = Files.newDirectoryStream(entitiesDir, "r.*.*.mca")) {
+            for (Path file : files) {
+                if (Files.size(file) == 0L) continue;
+                McaEntitiesFile mca;
+                synchronized (McaWriteSupport.lockFor(file)) {
+                    mca = McaFileHelpers.readEntities(file);
+                }
+                for (EntitiesChunk chunk : mca) {
+                    if (chunk == null) continue;
+                    if (chunk.getRegionX() != mca.getRegionX()
+                            || chunk.getRegionZ() != mca.getRegionZ()) {
+                        throw new IOException("Entity chunk position does not match region "
+                                + file.getFileName());
+                    }
+                    ListTag<CompoundTag> roots = entityList(chunk);
+                    if (roots != null) mergeUuidCounts(counts, roots, affected);
+                }
+            }
+            for (UUID uuid : expectedPresent) {
+                if (counts.getOrDefault(uuid, 0) != 1) {
+                    throw new IOException("Entity UUID occurrence count is not one: " + uuid);
+                }
+            }
+            for (UUID uuid : expectedAbsent) {
+                if (counts.getOrDefault(uuid, 0) != 0) {
+                    throw new IOException("Removed entity UUID still exists: " + uuid);
+                }
+            }
+            return true;
+        } catch (Exception e) {
+            WMLogger.warn("Entity UUID verification failed; keeping revisions dirty for retry", e);
+            return false;
+        }
+    }
+
+    private static Map<UUID, Integer> countUuids(
+            ListTag<CompoundTag> roots,
+            Set<UUID> first,
+            Set<UUID> second) {
+        Set<UUID> selected = new HashSet<>(first);
+        selected.addAll(second);
+        Map<UUID, Integer> counts = new HashMap<>();
+        mergeUuidCounts(counts, roots, selected);
+        return counts;
+    }
+
+    private static void mergeUuidCounts(
+            Map<UUID, Integer> counts,
+            ListTag<CompoundTag> roots,
+            Set<UUID> selected) {
+        for (CompoundTag root : roots) {
+            for (UUID uuid : collectUuids(root)) {
+                if (selected.contains(uuid)) counts.merge(uuid, 1, Integer::sum);
+            }
         }
     }
 
