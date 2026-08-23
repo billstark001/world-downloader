@@ -38,9 +38,9 @@ import java.util.regex.Pattern;
  * Per-world save location and conflict strategy are stored as string maps (enum names).
  * A {@code null} value means "use the global config default".
  * <p>
- * All internal maps are {@code private}; callers must use the provided accessor methods.
- * The accessors validate that returned paths still exist and are still owned by the expected
- * source before handing them back, so callers do not need to re-check.
+ * All internal maps are {@code private}; callers must use the provided query and record methods.
+ * Path previews are read-only. An export or move operation must claim the directory and then
+ * record the selected name explicitly.
  */
 public class MirrorMapping {
 
@@ -135,73 +135,34 @@ public class MirrorMapping {
     // ── Query / update ────────────────────────────────────────────────────────
 
     /**
-     * Returns the folder base name assigned to {@code sourceId}, auto-generating
-     * (and persisting) a new name if none has been set yet.
-     * Always returns the <em>base</em> name — never a suffixed collision-resolved name.
+     * Returns the assigned base name, or a deterministic generated name when no
+     * assignment has been persisted yet. This query never writes configuration.
      */
-    public synchronized String getMirrorFolderName(String sourceId) {
+    public synchronized String previewBaseFolderName(String sourceId) {
         String existing = entries.get(sourceId);
         if (existing != null && !existing.isBlank()) {
             return existing;
         }
-        String generated = generateFolderName(sourceId);
-        entries.put(sourceId, generated);
-        save();
-        return generated;
-    }
-
-    /**
-     * Explicitly assigns a folder base name to a source ID (e.g. from a future UI).
-     * Also clears all previously cached resolved names for this source so the next
-     * call to {@link #getResolvedFolderName} re-runs the collision scan.
-     */
-    public synchronized void setMirrorFolderName(String sourceId, String folderName) {
-        entries.put(sourceId, folderName);
-        // Invalidate resolved names for every save-location since the base changed.
-        resolvedFolderNames.entrySet().removeIf(e -> e.getKey().startsWith(sourceId + KEY_SEP));
-        save();
+        return generateFolderName(sourceId);
     }
 
     // ── Resolved folder names (per save-location) ─────────────────────────────
 
     /**
      * Returns the previously persisted collision-resolved folder name for
-     * {@code (sourceId, saveLocationName)}, but <em>only</em> if:
-     * <ol>
-     *   <li>such a value has been recorded, and</li>
-     *   <li>the folder {@code base.resolve(resolvedName)} actually exists on disk, and</li>
-     *   <li>the folder is still owned by {@code sourceId} (checked via
-     *       {@link WorldMetadata#isOwnedBy}).</li>
-     * </ol>
-     * If any check fails the stale entry is removed and {@code null} is returned so
-     * that the caller performs a fresh resolution scan.
+     * {@code (sourceId, saveLocationName)}. This query deliberately performs no
+     * filesystem validation; explicit write and move operations validate ownership.
      *
      * @param sourceId        the world's source identifier
      * @param saveLocationName the enum name of the save-location
      *                         ({@link io.github.billstark001.worldmirror.config.ModConfig.SaveLocation#name()})
-     * @param base            the root directory that corresponds to {@code saveLocationName}
-     * @return the validated resolved folder name, or {@code null}
+     * @return the recorded resolved folder name, or {@code null}
      */
-    public synchronized String getResolvedFolderName(String sourceId, String saveLocationName, Path base) {
+    public synchronized String previewResolvedFolderName(
+            String sourceId, String saveLocationName) {
         String key = sourceId + KEY_SEP + saveLocationName;
         String v = resolvedFolderNames.get(key);
-        if (v == null || v.isBlank()) return null;
-
-        // Validate: directory must exist and still belong to this source.
-        Path candidate = base.resolve(v);
-        if (!candidate.toFile().exists()) {
-            WMLogger.debug("Resolved folder no longer exists, invalidating: " + candidate);
-            resolvedFolderNames.remove(key);
-            save();
-            return null;
-        }
-        if (!WorldMetadata.isOwnedBy(candidate, sourceId)) {
-            WMLogger.debug("Resolved folder ownership mismatch, invalidating: " + candidate);
-            resolvedFolderNames.remove(key);
-            save();
-            return null;
-        }
-        return v;
+        return v == null || v.isBlank() ? null : v;
     }
 
     /**
@@ -214,23 +175,22 @@ public class MirrorMapping {
      * @param saveLocationName the enum name of the save-location
      * @param resolvedName    the folder name that was chosen (relative to the location root)
      */
-    public synchronized void setResolvedFolderName(String sourceId, String saveLocationName,
-                                      String resolvedName) {
+    public synchronized void recordResolvedFolderName(
+            String sourceId, String saveLocationName, String resolvedName) {
+        entries.putIfAbsent(sourceId, generateFolderName(sourceId));
         resolvedFolderNames.put(sourceId + KEY_SEP + saveLocationName, resolvedName);
         save();
     }
 
-    /**
-     * Removes all cached resolved folder names for {@code sourceId} across every
-     * save-location.  Call this whenever a directory is known to have been deleted or
-     * moved by the user so that the next resolution scan starts fresh.
-     *
-     * @param sourceId the world's source identifier
-     */
-    public synchronized void invalidateResolvedFolderNames(String sourceId) {
-        boolean changed = resolvedFolderNames.entrySet()
-                .removeIf(e -> e.getKey().startsWith(sourceId + KEY_SEP));
-        if (changed) save();
+    /** Records a per-world location and its resolved folder in one durable write. */
+    public synchronized void recordMirrorLocation(
+            String sourceId, String locationName, String resolvedName) {
+        entries.putIfAbsent(sourceId, generateFolderName(sourceId));
+        perWorldSaveLocation.put(sourceId, locationName);
+        resolvedFolderNames.entrySet().removeIf(
+                entry -> entry.getKey().startsWith(sourceId + KEY_SEP));
+        resolvedFolderNames.put(sourceId + KEY_SEP + locationName, resolvedName);
+        save();
     }
 
     // ── Per-world save location ───────────────────────────────────────────────
@@ -242,23 +202,6 @@ public class MirrorMapping {
     public synchronized String getPerWorldSaveLocation(String sourceId) {
         String v = perWorldSaveLocation.get(sourceId);
         return (v != null && !v.isBlank()) ? v : null;
-    }
-
-    /**
-     * Sets a per-world save-location override.
-     * Pass {@code null} or an empty string to remove the override.
-     * Also invalidates all cached resolved folder names for this source because the
-     * effective base directory may have changed.
-     */
-    public synchronized void setPerWorldSaveLocation(String sourceId, String locationName) {
-        if (locationName == null || locationName.isBlank()) {
-            perWorldSaveLocation.remove(sourceId);
-        } else {
-            perWorldSaveLocation.put(sourceId, locationName);
-        }
-        // Invalidate resolved names — the base directory changed.
-        invalidateResolvedFolderNames(sourceId);
-        save();
     }
 
     // ── Per-world conflict strategy ───────────────────────────────────────────

@@ -34,6 +34,7 @@ import java.nio.file.Path;
 import java.sql.SQLException;
 import java.lang.management.GarbageCollectorMXBean;
 import java.lang.management.ManagementFactory;
+import java.lang.management.ThreadMXBean;
 import java.util.ArrayDeque;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -63,7 +64,6 @@ public final class DownloadManager {
     // ── State ─────────────────────────────────────────────────────────────────
 
     private static final AtomicBoolean currentActive = new AtomicBoolean(false);
-    private static long lastPeriodicSyncMs = 0;
     private static long lastCacheEvictionMs = 0;
     private static final AtomicBoolean exportInProgress = new AtomicBoolean(false);
     /** Guards against starting a second initial-capture while one is still running. */
@@ -72,33 +72,54 @@ public final class DownloadManager {
     private static final int PRE_EXPORT_CAPTURE_RANGE = 8;
     private static final int STOP_CAPTURE_RANGE = 6;
     private static final int MAX_CAPTURE_CHUNKS_PER_TICK = 64;
+    private static final int MAX_DIAGNOSTIC_CAPTURE_REASONS = 32;
     private static final int LIGHT_UPDATE_COALESCE_TICKS = 2;
     private static final long CACHE_EVICTION_INTERVAL_MS = 5_000L;
     private static final Object captureQueueLock = new Object();
     private static final ArrayDeque<PendingChunkCapture> pendingCaptures = new ArrayDeque<>();
     private static final Set<CaptureKey> pendingCaptureSet = new HashSet<>();
     private static final Map<CaptureKey, Long> pendingLightUpdates = new HashMap<>();
-    private static PendingExportRequest pendingExport = null;
+    private static ExportRequest pendingExport = null;
     private static long clientTick = 0;
+    private static long nextAutomaticExportAttemptMs;
     private static volatile boolean mirrorCaptureWarningShown;
     private static volatile ModConfig.DownloadPipelineMode activePipelineMode =
             ModConfig.DownloadPipelineMode.STABLE_PERIODIC;
-    private static final AtomicLong coalescedCaptureHints = new AtomicLong();
-    private static final AtomicLong droppedCaptureHints = new AtomicLong();
+    private static long coalescedCaptureHints;
+    private static long droppedCaptureHints;
+    private static final Map<String, CaptureHintCounters> captureHintsByReason = new HashMap<>();
+    private static final Map<String, LatencyWindow> captureLatenciesByReason = new HashMap<>();
     private static final AtomicBoolean captureReconciliationNeeded = new AtomicBoolean();
     private static final AtomicLong exportFailures = new AtomicLong();
     private static final AtomicLong entityRevision = new AtomicLong(1L);
     private static final AtomicLong durableEntityRevision = new AtomicLong();
-    private static volatile long lastCaptureMicros;
+    private static final LatencyWindow captureTickLatencies = new LatencyWindow(4096);
+    private static final LatencyWindow unloadCaptureLatencies = new LatencyWindow(4096);
+    private static final LatencyWindow worldFrameIntervals = new LatencyWindow(8192);
+    private static final LatencyWindow worldMirrorTickWork = new LatencyWindow(4096);
+    private static final AtomicLong unloadCaptureFailures = new AtomicLong();
+    private static final AtomicLong captureBudgetOverruns = new AtomicLong();
+    private static final AtomicLong captureBudgetMaxOverrunUs = new AtomicLong();
+    private static final AtomicLong captureProcessed = new AtomicLong();
+    private static final AtomicLong captureCompleted = new AtomicLong();
+    private static final AtomicLong automaticExportSuppressed = new AtomicLong();
+    private static final AtomicLong deferredExportCoalesced = new AtomicLong();
+    private static final AtomicLong exportWorkerWallMs = new AtomicLong();
     private static volatile long lastExportMillis;
     private static volatile int lastExportWritten;
     private static volatile int lastExportSettled;
+    private static volatile int lastExportUnreadable;
     private static volatile ChunkExporter.ExportTimings lastExportTimings =
-            new ChunkExporter.ExportTimings(0, 0, 0, 0, 0, 0);
+            new ChunkExporter.ExportTimings(0, 0, 0, 0, 0, 0, 0);
     private static volatile long lastDurabilityIndexMillis;
     private static volatile long lastDiagnosticLogMs;
-    private static volatile long lastGcCount = -1L;
-    private static volatile long lastGcTimeMs = -1L;
+    private static volatile long diagnosticSessionStartedMs;
+    private static volatile boolean diagnosticSessionActive;
+    private static volatile boolean recordPerformanceTimings;
+    private static volatile long lastWorldFrameNs;
+    private static final Map<String, GcSnapshot> lastGcByCollector = new HashMap<>();
+    private static final AdaptiveExportScheduler adaptiveExportScheduler =
+            new AdaptiveExportScheduler();
     private static final ThreadPoolExecutor exportExecutor = new ThreadPoolExecutor(
             0, 1, 30L, TimeUnit.SECONDS, new LinkedBlockingQueue<>(1), runnable -> {
                 Thread thread = new Thread(runnable, "WM-Export");
@@ -108,9 +129,34 @@ public final class DownloadManager {
 
     private record CaptureKey(ResourceKey<Level> dimension, int chunkX, int chunkZ) { }
     private record PendingChunkCapture(CaptureKey key, String reason, long enqueuedAtMs) { }
-    private record PendingExportRequest(
+    private record GcSnapshot(long count, long timeMs) { }
+
+    private enum ExportTrigger {
+        MANUAL(false, 2),
+        STOP(false, 3),
+        PERIODIC(true, 0),
+        ADAPTIVE_HIGH_WATERMARK(true, 0),
+        ADAPTIVE_MAX_LATENCY(true, 0);
+
+        private final boolean automatic;
+        private final int priority;
+
+        ExportTrigger(boolean automatic, int priority) {
+            this.automatic = automatic;
+            this.priority = priority;
+        }
+    }
+
+    private static final class CaptureHintCounters {
+        private long received;
+        private long queued;
+        private long coalesced;
+        private long dropped;
+    }
+    private record ExportRequest(
+            ExportTrigger trigger,
             boolean shouldNotify,
-            boolean requiresPreCapture,
+            boolean preCaptureAlreadyDone,
             String preferredSourceId,
             String preferredSourceType,
             Map<ResourceKey<Level>, Map<BlockPos, CompoundTag>> containerSnapshot
@@ -140,6 +186,23 @@ public final class DownloadManager {
         return exportInProgress.get();
     }
 
+    /** Records gameplay frame spacing without doing work when diagnostics are disabled. */
+    public static void recordWorldFrame() {
+        if (!recordPerformanceTimings || !currentActive.get()) {
+            lastWorldFrameNs = 0L;
+            return;
+        }
+        Minecraft client = Minecraft.getInstance();
+        if (client.level == null || client.isPaused()) {
+            lastWorldFrameNs = 0L;
+            return;
+        }
+        long nowNs = System.nanoTime();
+        long previousNs = lastWorldFrameNs;
+        lastWorldFrameNs = nowNs;
+        if (previousNs > 0L) worldFrameIntervals.record((nowNs - previousNs) / 1_000L);
+    }
+
     public static void markEntitiesDirty() {
         if (currentActive.get()) entityRevision.incrementAndGet();
     }
@@ -151,10 +214,10 @@ public final class DownloadManager {
             long oldestCaptureAgeMs,
             long coalescedHints,
             long droppedHints,
-            long lastCaptureMicros,
             long lastExportMillis,
             int lastExportWritten,
             int lastExportSettled,
+            int lastExportUnreadable,
             long exportFailures) { }
 
     public static PipelineMetrics getPipelineMetrics() {
@@ -163,9 +226,10 @@ public final class DownloadManager {
             long age = oldest == null ? 0L
                     : Math.max(0L, System.currentTimeMillis() - oldest.enqueuedAtMs());
             return new PipelineMetrics(activePipelineMode, pendingCaptures.size(),
-                    ChunkListener.getDirtyCount(), age, coalescedCaptureHints.get(),
-                    droppedCaptureHints.get(), lastCaptureMicros, lastExportMillis,
-                    lastExportWritten, lastExportSettled, exportFailures.get());
+                    ChunkListener.getDirtyCount(), age, coalescedCaptureHints,
+                    droppedCaptureHints, lastExportMillis,
+                    lastExportWritten, lastExportSettled, lastExportUnreadable,
+                    exportFailures.get());
         }
     }
 
@@ -179,6 +243,7 @@ public final class DownloadManager {
     /** Last-chance main-thread capture before Fabric removes a loaded chunk. */
     public static void captureChunkBeforeUnload(ClientLevel world, LevelChunk chunk) {
         if (!currentActive.get() || world == null || chunk == null) return;
+        long startedNs = System.nanoTime();
         CaptureKey key = new CaptureKey(world.dimension(),
                 chunk.getPos().getMinBlockX() >> 4, chunk.getPos().getMinBlockZ() >> 4);
         synchronized (captureQueueLock) {
@@ -191,22 +256,39 @@ public final class DownloadManager {
                         ChunkSerializer.serialize(world, chunk));
             }
         } catch (Exception e) {
+            unloadCaptureFailures.incrementAndGet();
             WMLogger.warnRateLimited("capture-unload", 30_000L,
                     "Final capture before unload failed chunk=" + chunk.getPos()
                             + "; cached data may be stale", e);
+        } finally {
+            if (recordPerformanceTimings) {
+                long elapsedUs = (System.nanoTime() - startedNs) / 1_000L;
+                unloadCaptureLatencies.record(elapsedUs);
+                recordCaptureReasonLatency("unload-final", elapsedUs);
+                logSlowCapture("unload", "unload-final", key, 0L, elapsedUs);
+            }
         }
     }
 
     private static boolean queueCaptureKey(CaptureKey key, String reason) {
         synchronized (captureQueueLock) {
+            CaptureHintCounters reasonCounters = null;
+            if (recordPerformanceTimings) {
+                String metricReason = captureMetricReasonLocked(reason);
+                reasonCounters = captureHintsByReason.computeIfAbsent(
+                        metricReason, ignored -> new CaptureHintCounters());
+                reasonCounters.received++;
+            }
             if (!pendingCaptureSet.add(key)) {
-                coalescedCaptureHints.incrementAndGet();
+                coalescedCaptureHints++;
+                if (reasonCounters != null) reasonCounters.coalesced++;
                 return false;
             }
             int limit = ModConfig.get().performance.maxPendingCaptureHints;
             if (pendingCaptures.size() >= limit) {
                 pendingCaptureSet.remove(key);
-                droppedCaptureHints.incrementAndGet();
+                droppedCaptureHints++;
+                if (reasonCounters != null) reasonCounters.dropped++;
                 captureReconciliationNeeded.set(true);
                 WMLogger.warnRateLimited("capture-queue-capacity", 30_000L,
                         "Capture-hint queue reached its configured limit (" + limit
@@ -214,9 +296,18 @@ public final class DownloadManager {
                 return false;
             }
             pendingCaptures.add(new PendingChunkCapture(key, reason, System.currentTimeMillis()));
+            if (reasonCounters != null) reasonCounters.queued++;
             captureInProgress.set(true);
             return true;
         }
+    }
+
+    /** Keeps diagnostic cardinality bounded even if an integration supplies arbitrary reasons. */
+    private static String captureMetricReasonLocked(String reason) {
+        String normalized = reason == null || reason.isBlank() ? "unknown" : reason;
+        if (captureHintsByReason.containsKey(normalized)) return normalized;
+        if (captureHintsByReason.size() < MAX_DIAGNOSTIC_CAPTURE_REASONS - 1) return normalized;
+        return "other";
     }
 
     /** Queues a normal capture when a light packet arrives before its base chunk. */
@@ -283,11 +374,13 @@ public final class DownloadManager {
         if (exportInProgress.get()) {
             Component msg = Component.translatable("msg.worldmirror.exportBusy");
             WMPlayerMessages.sendSystemMessage(client.player, msg);
-            deferExport(true, true, null, null, ContainerTracker.snapshotSavedData());
+            deferExport(new ExportRequest(ExportTrigger.MANUAL, true, false,
+                    null, null, ContainerTracker.snapshotSavedData()));
             WMLogger.debug("Export already in progress; coalesced another export request.");
             return;
         }
-        startBackgroundSync(client, true);
+        startBackgroundSync(client, new ExportRequest(
+                ExportTrigger.MANUAL, true, false, null, null, null));
     }
 
     /** Clears all in-memory caches. */
@@ -352,6 +445,26 @@ public final class DownloadManager {
      * applies cache-eviction rules, and detects dimension / server-world changes.
      */
     public static void onClientTick(Minecraft client) {
+        long startedNs = System.nanoTime();
+        boolean shouldRecordPerformance = currentActive.get()
+                && ModConfig.get().performance.diagnosticPerformanceLogging;
+        if (shouldRecordPerformance && !diagnosticSessionActive) {
+            resetDiagnosticSession();
+            diagnosticSessionActive = true;
+        } else if (!shouldRecordPerformance) {
+            diagnosticSessionActive = false;
+        }
+        recordPerformanceTimings = shouldRecordPerformance;
+        try {
+            processClientTick(client);
+        } finally {
+            if (recordPerformanceTimings) {
+                worldMirrorTickWork.record((System.nanoTime() - startedNs) / 1_000L);
+            }
+        }
+    }
+
+    private static void processClientTick(Minecraft client) {
         if (client.level == null) return;
 
         clientTick++;
@@ -401,17 +514,30 @@ public final class DownloadManager {
 
         long now = System.currentTimeMillis();
         ModConfig cfg = ModConfig.get();
-        long interval = activePipelineMode == ModConfig.DownloadPipelineMode.EXPERIMENTAL_ADAPTIVE
-                ? (long) cfg.performance.adaptiveMaxLatencySeconds * 1000L
-                : (long) cfg.syncIntervalSeconds * 1000L;
         int dirty = ChunkListener.getDirtyCount();
         boolean entityDirty = entityRevision.get() > durableEntityRevision.get();
-        boolean highWatermark = activePipelineMode == ModConfig.DownloadPipelineMode.EXPERIMENTAL_ADAPTIVE
-                && dirty >= cfg.performance.adaptiveDirtyHighWatermark;
-        boolean due = now - lastPeriodicSyncMs >= interval;
-        if ((due || highWatermark) && (dirty > 0 || entityDirty)) {
-            lastPeriodicSyncMs = now;
-            startBackgroundSync(client, false);
+        boolean hasDurabilityWork = dirty > 0 || entityDirty;
+        long maximumLatencyMs = (long) cfg.syncIntervalSeconds * 1_000L;
+        ExportTrigger automaticTrigger = null;
+        if (activePipelineMode == ModConfig.DownloadPipelineMode.EXPERIMENTAL_ADAPTIVE) {
+            AdaptiveExportScheduler.Decision decision = adaptiveExportScheduler.evaluate(
+                    now, dirty, hasDurabilityWork,
+                    cfg.performance.adaptiveDirtyHighWatermark,
+                    (long) cfg.performance.adaptiveExportCooldownSeconds * 1_000L,
+                    maximumLatencyMs);
+            automaticTrigger = switch (decision) {
+                case HIGH_WATERMARK -> ExportTrigger.ADAPTIVE_HIGH_WATERMARK;
+                case MAX_LATENCY -> ExportTrigger.ADAPTIVE_MAX_LATENCY;
+                case NONE -> null;
+            };
+        } else if (hasDurabilityWork
+                && adaptiveExportScheduler.maximumLatencyReached(now, maximumLatencyMs)) {
+            automaticTrigger = ExportTrigger.PERIODIC;
+        }
+        if (automaticTrigger != null && now >= nextAutomaticExportAttemptMs) {
+            boolean started = startBackgroundSync(client, new ExportRequest(
+                    automaticTrigger, false, false, null, null, null));
+            nextAutomaticExportAttemptMs = started ? 0L : now + 1_000L;
         }
         if (now - lastCacheEvictionMs >= CACHE_EVICTION_INTERVAL_MS) {
             lastCacheEvictionMs = now;
@@ -458,70 +584,48 @@ public final class DownloadManager {
      * Returns the root folder for the mirror world.
      * Per-world save-location (from {@link MirrorMapping}) takes precedence over the global config.
      *
-     * <p>Resolution strategy (prevents both collision clobbering and the {@code _2_2_2…}
-     * suffix-accumulation bug):
-     * <ol>
-     *   <li>Determine the <em>base</em> folder name from {@code entries} (never contains a
-     *       generated suffix).</li>
-     *   <li>If {@code resolvedFolderNames} already contains an entry for this source
-     *       <em>and</em> that folder still exists and is still owned by us, reuse it
-     *       immediately — no rescan needed.</li>
-     *   <li>Otherwise run the full collision scan starting from the base name, find a free
-     *       or owned folder, and persist the winner into {@code resolvedFolderNames} only
-     *       (the base name in {@code entries} is never touched).</li>
-     * </ol>
+     * This preview performs no filesystem access and writes no configuration, so it is safe
+     * for render and map-integration call sites. Real operations revalidate ownership and
+     * resolve collisions immediately before creating or moving a directory.
      */
-    public static Path getOutputPath(Minecraft client) {
+    public static Path previewOutputPath(Minecraft client) {
         String sourceId   = WorldMetadata.detectSourceId(client);
-        return getOutputPathForSource(sourceId);
+        return previewOutputPathForSource(sourceId);
     }
 
-    private static Path getOutputPathForSource(String sourceId) {
-        // Per-world override wins over global config
+    private static Path previewOutputPathForSource(String sourceId) {
+        return previewOutputPathForLocation(sourceId, effectiveSaveLocation(sourceId));
+    }
+
+    private static ModConfig.SaveLocation effectiveSaveLocation(String sourceId) {
         String perWorldLoc = MirrorMapping.getInstance().getPerWorldSaveLocation(sourceId);
-        ModConfig.SaveLocation saveLocation;
         if (perWorldLoc != null) {
             try {
-                saveLocation = ModConfig.SaveLocation.valueOf(perWorldLoc);
+                return ModConfig.SaveLocation.valueOf(perWorldLoc);
             } catch (IllegalArgumentException e) {
-                saveLocation = ModConfig.get().defaultSaveLocation;
+                return ModConfig.get().defaultSaveLocation;
             }
-        } else {
-            saveLocation = ModConfig.get().defaultSaveLocation;
         }
-
-        return getOutputPathForLocation(sourceId, saveLocation);
+        return ModConfig.get().defaultSaveLocation;
     }
 
-    /** Resolves a source's mirror location for an explicit save-location choice. */
-    public static Path getOutputPathForLocation(String sourceId, ModConfig.SaveLocation saveLocation) {
-        String baseName = MirrorMapping.getInstance().getMirrorFolderName(sourceId);
-        Path base = (saveLocation == ModConfig.SaveLocation.SAVES)
-                ? FabricLoader.getInstance().getGameDir().resolve("saves")
-                : FabricLoader.getInstance().getGameDir().resolve("downloaded_worlds");
+    /** Computes a source's mirror location without creating folders or writing configuration. */
+    public static Path previewOutputPathForLocation(
+            String sourceId, ModConfig.SaveLocation saveLocation) {
+        String baseName = MirrorMapping.getInstance().previewBaseFolderName(sourceId);
+        Path base = outputRoot(saveLocation);
 
         String saveLocName = saveLocation.name();
 
-        // Fast path: if we already recorded a validated resolved name for this
-        // (source, save-location) pair, getResolvedFolderName() has already
-        // checked existence and ownership — reuse it immediately.
         String cachedResolved = MirrorMapping.getInstance()
-                .getResolvedFolderName(sourceId, saveLocName, base);
-        if (cachedResolved != null) {
-            return base.resolve(cachedResolved);
-        }
+                .previewResolvedFolderName(sourceId, saveLocName);
+        return base.resolve(cachedResolved == null ? baseName : cachedResolved);
+    }
 
-        // Full collision scan starting from the base name.
-        Path resolved = resolveOutputPath(base, baseName, sourceId);
-        String resolvedName = resolved.getFileName().toString();
-
-        // Persist the winner — keyed by (sourceId, saveLocName) — never touch entries.
-        MirrorMapping.getInstance().setResolvedFolderName(sourceId, saveLocName, resolvedName);
-        if (!resolvedName.equals(baseName)) {
-            WMLogger.debug("Folder name collision resolved: '"
-                    + baseName + "' → '" + resolvedName + "'");
-        }
-        return resolved;
+    private static Path outputRoot(ModConfig.SaveLocation saveLocation) {
+        return saveLocation == ModConfig.SaveLocation.SAVES
+                ? FabricLoader.getInstance().getGameDir().resolve("saves")
+                : FabricLoader.getInstance().getGameDir().resolve("downloaded_worlds");
     }
 
     /**
@@ -530,10 +634,9 @@ public final class DownloadManager {
      * not continue using a stale location from a previous configuration.
      */
     public static void setMirrorSaveLocation(String sourceId, ModConfig.SaveLocation saveLocation) {
-        Path target = getOutputPathForLocation(sourceId, saveLocation);
-        MirrorMapping mapping = MirrorMapping.getInstance();
-        mapping.setPerWorldSaveLocation(sourceId, saveLocation.name());
-        mapping.setResolvedFolderName(sourceId, saveLocation.name(), target.getFileName().toString());
+        Path target = selectOutputPathForOperation(sourceId, saveLocation);
+        MirrorMapping.getInstance().recordMirrorLocation(
+                sourceId, saveLocation.name(), target.getFileName().toString());
     }
 
     /**
@@ -549,11 +652,11 @@ public final class DownloadManager {
             return MirrorMoveResult.failure("export_in_progress");
         }
         String sourceId = WorldMetadata.detectSourceId(client);
-        Path source = getOutputPath(client);
+        Path source = selectOutputPathForOperation(sourceId, effectiveSaveLocation(sourceId));
         if (!Files.isDirectory(source)) {
             return MirrorMoveResult.failure("source_missing");
         }
-        Path target = getOutputPathForLocation(sourceId, targetLocation);
+        Path target = selectOutputPathForOperation(sourceId, targetLocation);
         if (source.normalize().equals(target.normalize())) {
             setMirrorSaveLocation(sourceId, targetLocation);
             return MirrorMoveResult.success(source, target);
@@ -598,12 +701,11 @@ public final class DownloadManager {
         Path candidate = base.resolve(folderName);
         if (isFolderFreeOrOwned(candidate, sourceId)) return candidate;
 
-        for (int suffix = 2; suffix < 1000; suffix++) {
+        for (int suffix = 2; suffix < Integer.MAX_VALUE; suffix++) {
             candidate = base.resolve(folderName + "_" + suffix);
             if (isFolderFreeOrOwned(candidate, sourceId)) return candidate;
         }
-        // Fallback (should never happen in practice)
-        return base.resolve(folderName + "_" + System.currentTimeMillis());
+        throw new IllegalStateException("No collision-free mirror folder name is available");
     }
 
     /**
@@ -613,6 +715,48 @@ public final class DownloadManager {
     private static boolean isFolderFreeOrOwned(Path folder, String sourceId) {
         if (!folder.toFile().exists()) return true;
         return WorldMetadata.isOwnedBy(folder, sourceId);
+    }
+
+    /** Performs filesystem validation only at an explicit write or move boundary. */
+    private static Path selectOutputPathForOperation(
+            String sourceId, ModConfig.SaveLocation saveLocation) {
+        Path base = outputRoot(saveLocation);
+        String baseName = MirrorMapping.getInstance().previewBaseFolderName(sourceId);
+        String resolved = MirrorMapping.getInstance()
+                .previewResolvedFolderName(sourceId, saveLocation.name());
+        if (resolved != null) {
+            Path reserved = base.resolve(resolved);
+            if (isFolderFreeOrOwned(reserved, sourceId)) return reserved;
+        }
+        return resolveOutputPath(base, baseName, sourceId);
+    }
+
+    /** Atomically claims and records the output directory for a real write operation. */
+    private static Path claimOutputDirectory(String sourceId) throws java.io.IOException {
+        ModConfig.SaveLocation saveLocation = effectiveSaveLocation(sourceId);
+        Path base = outputRoot(saveLocation);
+        Files.createDirectories(base);
+
+        String baseName = MirrorMapping.getInstance().previewBaseFolderName(sourceId);
+        Path candidate = selectOutputPathForOperation(sourceId, saveLocation);
+        while (true) {
+            try {
+                Files.createDirectory(candidate);
+                break;
+            } catch (java.nio.file.FileAlreadyExistsException raced) {
+                if (WorldMetadata.isOwnedBy(candidate, sourceId)) break;
+            }
+            candidate = selectOutputPathForOperation(sourceId, saveLocation);
+        }
+
+        String resolvedName = candidate.getFileName().toString();
+        MirrorMapping.getInstance().recordResolvedFolderName(
+                sourceId, saveLocation.name(), resolvedName);
+        if (!resolvedName.equals(baseName)) {
+            WMLogger.debug("Folder name collision resolved: '"
+                    + baseName + "' → '" + resolvedName + "'");
+        }
+        return candidate;
     }
 
     private static void requestDownloadStart(Minecraft client, String reason) {
@@ -638,7 +782,7 @@ public final class DownloadManager {
     /** Ensures an output world is current only after an explicit confirmation. */
     private static void requestOutputReady(Minecraft client, Runnable onReady) {
         String sourceId = WorldMetadata.detectSourceId(client);
-        Path output = getOutputPathForSource(sourceId);
+        Path output = selectOutputPathForOperation(sourceId, effectiveSaveLocation(sourceId));
         MirrorMigrationPlan.Inspection plan = MirrorMigrationCoordinator.inspect(output);
         switch (plan.state()) {
             case NEW, CURRENT -> onReady.run();
@@ -687,9 +831,14 @@ public final class DownloadManager {
     private static void activateDownload(Minecraft client, String reason) {
         if (!currentActive.compareAndSet(false, true)) return;
         activePipelineMode = ModConfig.get().pipelineMode;
+        resetDiagnosticSession();
+        diagnosticSessionActive = ModConfig.get().performance.diagnosticPerformanceLogging;
+        recordPerformanceTimings = diagnosticSessionActive;
         entityRevision.incrementAndGet();
-        lastPeriodicSyncMs = System.currentTimeMillis();
-        lastCacheEvictionMs = lastPeriodicSyncMs;
+        long nowMs = System.currentTimeMillis();
+        adaptiveExportScheduler.reset(nowMs);
+        nextAutomaticExportAttemptMs = 0L;
+        lastCacheEvictionMs = nowMs;
         if (client.level != null) captureLoadedChunksAsync(client);
         WMPlayerMessages.sendOverlayMessage(client.player, Component.translatable("msg.worldmirror.downloadStart"));
         WMLogger.info("Download activated with pipeline=" + activePipelineMode
@@ -731,6 +880,7 @@ public final class DownloadManager {
         ClientLevel world = client.level;
         if (world == null || client.player == null) return;
 
+        long startedNs = System.nanoTime();
         ResourceKey<Level> dimension = world.dimension();
         int playerCX = client.player.getBlockX() >> 4;
         int playerCZ = client.player.getBlockZ() >> 4;
@@ -755,7 +905,8 @@ public final class DownloadManager {
 
         if (captured > 0) {
             WMLogger.debug("Captured " + captured + " nearby chunks (range=" + STOP_CAPTURE_RANGE
-                    + ") for " + reason + ".");
+                    + ") for " + reason + " elapsedMs="
+                    + ((System.nanoTime() - startedNs) / 1_000_000L) + ".");
         }
     }
 
@@ -770,8 +921,9 @@ public final class DownloadManager {
         }
 
         if (lifecycle.exportAllCachedOnStop) {
-            startBackgroundSync(client, false, true,
-                    lastSourceId, lastSourceType);
+            startBackgroundSync(client, new ExportRequest(
+                    ExportTrigger.STOP, false, true,
+                    lastSourceId, lastSourceType, null));
         }
     }
 
@@ -779,51 +931,44 @@ public final class DownloadManager {
      * Prepares a snapshot on the game thread, then hands it off to a background
      * background thread for the actual I/O work.
      */
-    private static void startBackgroundSync(Minecraft client, boolean notify) {
-        startBackgroundSync(client, notify, false, null, null, null);
-    }
-
-    private static void startBackgroundSync(Minecraft client, boolean notify, boolean preCaptureAlreadyDone,
-                                            String preferredSourceId,
-                                            String preferredSourceType) {
-        startBackgroundSync(client, notify, preCaptureAlreadyDone, preferredSourceId, preferredSourceType, null);
-    }
-
-    private static void startBackgroundSync(Minecraft client, boolean notify, boolean preCaptureAlreadyDone,
-                                            String preferredSourceId,
-                                            String preferredSourceType,
-                                            Map<ResourceKey<Level>, Map<BlockPos, CompoundTag>> preferredContainerSnapshot) {
+    private static boolean startBackgroundSync(Minecraft client, ExportRequest request) {
         if (exportInProgress.get()) {
-            deferExport(notify, notify && !preCaptureAlreadyDone,
-                    preferredSourceId, preferredSourceType,
-                    preferredContainerSnapshot != null
-                            ? preferredContainerSnapshot
-                            : ContainerTracker.snapshotSavedData());
-            WMLogger.debug("Export already in progress; queued another export pass.");
-            return;
+            if (request.trigger().automatic) {
+                automaticExportSuppressed.incrementAndGet();
+                return false;
+            }
+            deferExport(withContainerSnapshot(request));
+            WMLogger.debug("Export already in progress; queued trigger="
+                    + request.trigger() + " for one deferred pass.");
+            return false;
         }
 
         // A light overlay is already up to date, but its dirty timestamp is
         // deliberately delayed so a burst exports as one coherent chunk write.
-        if (!preCaptureAlreadyDone && hasPendingLightUpdates()) {
-            deferExport(notify, notify, preferredSourceId, preferredSourceType,
-                    preferredContainerSnapshot);
-            return;
+        if (!request.preCaptureAlreadyDone() && hasPendingLightUpdates()) {
+            if (request.trigger().automatic) {
+                automaticExportSuppressed.incrementAndGet();
+            } else {
+                deferExport(request);
+            }
+            return false;
         }
 
         // Queue nearby capture work and defer export until that incremental
         // capture has finished. This keeps all chunk/world access on the main
         // thread without blocking it for hundreds of serialisations at once.
-        if (!preCaptureAlreadyDone && notify && ModConfig.get().lifecycle.captureNearbyBeforeExport
+        if (!request.preCaptureAlreadyDone() && request.shouldNotify()
+                && ModConfig.get().lifecycle.captureNearbyBeforeExport
                 && client.level != null && client.player != null) {
             int playerCX = client.player.getBlockX() >> 4;
             int playerCZ = client.player.getBlockZ() >> 4;
             int queued = queueLoadedChunks(client.level, playerCX, playerCZ,
                     PRE_EXPORT_CAPTURE_RANGE, "pre-export");
             if (queued > 0 || captureInProgress.get()) {
-                deferExport(notify, false, preferredSourceId, preferredSourceType,
-                        preferredContainerSnapshot);
-                return;
+                deferExport(new ExportRequest(request.trigger(), request.shouldNotify(), true,
+                        request.preferredSourceId(), request.preferredSourceType(),
+                        request.containerSnapshot()));
+                return false;
             }
         }
 
@@ -844,13 +989,13 @@ public final class DownloadManager {
         Map<ResourceKey<Level>, Map<ChunkPos, List<CompoundTag>>> entitySnapshot =
                 captureEntities ? EntityTracker.snapshot() : Map.of();
         Map<ResourceKey<Level>, Map<BlockPos, CompoundTag>> containerSnapshot =
-                preferredContainerSnapshot != null
-                        ? preferredContainerSnapshot
+                request.containerSnapshot() != null
+                        ? request.containerSnapshot()
                         : ContainerTracker.snapshotSavedData();
 
         // Collect source info while on the game thread
-        String sourceId = preferredSourceId;
-        String sourceType = preferredSourceType;
+        String sourceId = request.preferredSourceId();
+        String sourceType = request.preferredSourceType();
         if (isUnknownSourceId(sourceId)) {
             sourceId = WorldMetadata.detectSourceId(client);
         }
@@ -874,30 +1019,35 @@ public final class DownloadManager {
 
         Path worldFolder;
         try {
-            worldFolder = getOutputPathForSource(finalSourceId);
-            Files.createDirectories(worldFolder);
+            worldFolder = claimOutputDirectory(finalSourceId);
         } catch (Exception e) {
             WMLogger.warn("Export output directory preparation failed source=" + finalSourceId, e);
-            return;
+            return false;
         }
 
         int totalChunks = snapshot.values().stream().mapToInt(Map::size).sum();
-        WMLogger.debug("Queued export: dirtySnapshot=" + totalChunks + " dimensions="
+        WMLogger.debug("Queued export: trigger=" + request.trigger()
+                + " dirtySnapshot=" + totalChunks + " dimensions="
                 + snapshot.size() + " pipeline=" + activePipelineMode);
 
         // ── Background thread ─────────────────────────────────────────────────
         exportInProgress.set(true);
+        adaptiveExportScheduler.onExportStarted(System.currentTimeMillis(), totalChunks,
+                ModConfig.get().performance.adaptiveDirtyHighWatermark);
         final Path finalWorldFolder = worldFolder;
+        final boolean diagnosticExport =
+                ModConfig.get().performance.diagnosticPerformanceLogging;
 
         Runnable worker = () -> {
             ChunkDatabase db = null;
             long exportStartedNs = System.nanoTime();
+            long exportStartedCpuNs = currentThreadCpuTimeNs();
             try {
                 MirrorMigrationPlan.Inspection readiness = MirrorMigrationCoordinator.inspect(finalWorldFolder);
                 if (!readiness.mayCreateOrWriteWithoutMigration()) {
                     WMLogger.warn("Mirror requires an explicit upgrade or is not writable ("
                             + readiness.state() + "); export aborted without modifying it.");
-                    notifyExportFailure(notify);
+                    notifyExportFailure(request.shouldNotify());
                     return;
                 }
 
@@ -915,7 +1065,7 @@ public final class DownloadManager {
                         createFreshWorld);
                 if (!worldgenReady) {
                     WMLogger.warn("World generation setup failed; export aborted before writing chunks.");
-                    notifyExportFailure(notify);
+                    notifyExportFailure(request.shouldNotify());
                     return;
                 }
                 if (createFreshWorld) {
@@ -931,7 +1081,7 @@ public final class DownloadManager {
                 } catch (SQLException e) {
                     WMLogger.warn("Chunk database open failed; export aborted world="
                             + finalWorldFolder, e);
-                    notifyExportFailure(notify);
+                    notifyExportFailure(request.shouldNotify());
                     return;
                 }
 
@@ -948,6 +1098,17 @@ public final class DownloadManager {
                 Map<ResourceKey<Level>, Map<ChunkPos, Long>> durableWritten = new HashMap<>();
                 boolean durabilityIndexSuccessful = true;
                 long durabilityIndexStartedNs = System.nanoTime();
+                for (Map.Entry<ResourceKey<Level>, Set<ChunkPos>> dimEntry
+                        : result.unreadableChunks().entrySet()) {
+                    if (dimEntry.getValue().isEmpty()) continue;
+                    String dimStr = dimEntry.getKey().identifier().toString();
+                    if (db.removeUnreadableUpdates(dimStr, dimEntry.getValue())) {
+                        WMLogger.warn("Removed stale durability claims for unreadable region chunks dimension="
+                                + dimStr + " chunks=" + dimEntry.getValue().size());
+                    } else {
+                        durabilityIndexSuccessful = false;
+                    }
+                }
                 for (Map.Entry<ResourceKey<Level>, Map<ChunkPos, ChunkExporter.WriteStamp>> dimEntry
                         : result.written().entrySet()) {
                     String dimStr = dimEntry.getKey().identifier().toString();
@@ -988,34 +1149,62 @@ public final class DownloadManager {
                 }
 
                 int totalWritten = result.totalWritten();
+                int totalUnreadable = result.unreadableChunks().values().stream()
+                        .mapToInt(Set::size).sum();
                 lastExportWritten = totalWritten;
+                lastExportUnreadable = totalUnreadable;
                 lastExportSettled = result.settledWithoutWrite().values().stream()
                         .mapToInt(Map::size).sum();
                 long elapsedMs = (System.nanoTime() - exportStartedNs) / 1_000_000L;
+                if (diagnosticExport) {
+                    long cpuNowNs = currentThreadCpuTimeNs();
+                    long cpuMs = exportStartedCpuNs < 0L || cpuNowNs < exportStartedCpuNs
+                            ? -1L : (cpuNowNs - exportStartedCpuNs) / 1_000_000L;
+                    ChunkExporter.ExportTimings timings = result.timings();
+                    WMLogger.info("[perf] export trigger=" + request.trigger()
+                            + " pipeline=" + activePipelineMode
+                            + " dirtySnapshot=" + totalChunks
+                            + " written=" + totalWritten
+                            + " unreadable=" + totalUnreadable
+                            + " dbLookupMs=" + timings.databaseLookupMs()
+                            + " materializeMs=" + timings.materializeMs()
+                            + " regionReadMs=" + timings.chunkReadMs()
+                            + " resolveMergeWriteMs=" + timings.resolveMergeWriteMs()
+                            + " regionFlushMs=" + timings.flushMs()
+                            + " regionVerifyMs=" + timings.verificationMs()
+                            + " entityWriteMs=" + timings.entityMs()
+                            + " dbCommitMs=" + lastDurabilityIndexMillis
+                            + " workerCpuMs=" + cpuMs
+                            + " elapsedMs=" + elapsedMs);
+                }
                 WMLogger.info("Export pass complete: status="
                         + (passSuccessful ? "success" : "partial")
                         + " pipeline=" + activePipelineMode
+                        + " trigger=" + request.trigger()
                         + " dirtySnapshot=" + totalChunks
                         + " written=" + totalWritten
+                        + " unreadable=" + totalUnreadable
                         + " settled=" + lastExportSettled
                         + " dirtyRemaining=" + ChunkListener.getDirtyCount()
                         + " elapsedMs=" + elapsedMs);
 
-                if (notify && passSuccessful) {
+                if (request.shouldNotify() && passSuccessful) {
                     Minecraft.getInstance().execute(() -> {
                         Minecraft mc = Minecraft.getInstance();
                         WMPlayerMessages.sendSystemMessage(
                                 mc.player, Component.translatable("msg.worldmirror.exportDone"));
                     });
-                } else if (notify) {
+                } else if (request.shouldNotify()) {
                     notifyExportFailure(true);
                 }
             } catch (Exception e) {
                 exportFailures.incrementAndGet();
-                WMLogger.warn("Export pass failed world=" + finalWorldFolder, e);
-                notifyExportFailure(notify);
+                WMLogger.warn("Export pass failed trigger=" + request.trigger()
+                        + " world=" + finalWorldFolder, e);
+                notifyExportFailure(request.shouldNotify());
             } finally {
                 lastExportMillis = (System.nanoTime() - exportStartedNs) / 1_000_000L;
+                if (diagnosticExport) exportWorkerWallMs.addAndGet(lastExportMillis);
                 if (db != null) db.close();
                 exportInProgress.set(false);
                 Minecraft.getInstance().execute(() ->
@@ -1023,6 +1212,13 @@ public final class DownloadManager {
             }
         };
         exportExecutor.execute(worker);
+        return true;
+    }
+
+    private static long currentThreadCpuTimeNs() {
+        ThreadMXBean bean = ManagementFactory.getThreadMXBean();
+        return bean.isCurrentThreadCpuTimeSupported() && bean.isThreadCpuTimeEnabled()
+                ? bean.getCurrentThreadCpuTime() : -1L;
     }
 
     private static int queueLoadedChunks(ClientLevel world, int playerCX, int playerCZ,
@@ -1064,7 +1260,7 @@ public final class DownloadManager {
         int processed = 0;
         int captured = 0;
         long startedNs = System.nanoTime();
-        long budgetNs = (long) captureBudgetMicros() * 1_000L;
+        long budgetNs = (long) ModConfig.get().performance.captureBudgetMicros * 1_000L;
 
         while (processed < MAX_CAPTURE_CHUNKS_PER_TICK
                 && (processed == 0 || System.nanoTime() - startedNs < budgetNs)) {
@@ -1092,6 +1288,7 @@ public final class DownloadManager {
                 continue;
             }
 
+            long captureStartedNs = System.nanoTime();
             try {
                 if (ChunkSerializer.isChunkEmpty(wc)) continue;
                 CompoundTag nbt = ChunkSerializer.serialize(world, wc);
@@ -1101,53 +1298,91 @@ public final class DownloadManager {
                 WMLogger.warnRateLimited("capture-incremental-" + request.reason(), 30_000L,
                         "Incremental capture failed chunk=" + wc.getPos()
                                 + " reason=" + request.reason(), e);
+            } finally {
+                if (recordPerformanceTimings) {
+                    long elapsedUs = (System.nanoTime() - captureStartedNs) / 1_000L;
+                    String metricReason = recordCaptureReasonLatency(request.reason(), elapsedUs);
+                    logSlowCapture("incremental", metricReason, request.key(),
+                            Math.max(0L, System.currentTimeMillis() - request.enqueuedAtMs()),
+                            elapsedUs);
+                }
             }
         }
 
-        lastCaptureMicros = (System.nanoTime() - startedNs) / 1_000L;
-
-        if (captured > 0 && !captureInProgress.get()) {
-            WMLogger.debug("Incremental chunk capture finished with " + captured + " chunk(s) on the last tick.");
+        if (processed > 0 && recordPerformanceTimings) {
+            long elapsedNs = System.nanoTime() - startedNs;
+            captureTickLatencies.record(elapsedNs / 1_000L);
+            captureProcessed.addAndGet(processed);
+            captureCompleted.addAndGet(captured);
+            if (elapsedNs > budgetNs) {
+                captureBudgetOverruns.incrementAndGet();
+                captureBudgetMaxOverrunUs.accumulateAndGet(
+                        (elapsedNs - budgetNs) / 1_000L, Math::max);
+            }
         }
+
         if (!captureInProgress.get() && captureReconciliationNeeded.compareAndSet(true, false)) {
             captureLoadedChunksAsync(client);
         }
     }
 
-    private static int captureBudgetMicros() {
-        int base = ModConfig.get().performance.captureBudgetMicros;
-        if (activePipelineMode != ModConfig.DownloadPipelineMode.EXPERIMENTAL_ADAPTIVE) return base;
+    private static String recordCaptureReasonLatency(String reason, long elapsedUs) {
         synchronized (captureQueueLock) {
-            int backlog = pendingCaptures.size();
-            int high = Math.max(1, ModConfig.get().performance.adaptiveDirtyHighWatermark);
-            return Math.min(5000, base + (base * Math.min(backlog, high) / high));
+            String metricReason = captureLatencyReasonLocked(reason);
+            captureLatenciesByReason.computeIfAbsent(
+                    metricReason, ignored -> new LatencyWindow(512)).record(elapsedUs);
+            return metricReason;
         }
     }
 
-    private static void deferExport(
-            boolean notify,
-            boolean requiresPreCapture,
-            String preferredSourceId,
-            String preferredSourceType,
-            Map<ResourceKey<Level>, Map<BlockPos, CompoundTag>> containerSnapshot) {
+    private static String captureLatencyReasonLocked(String reason) {
+        String normalized = reason == null || reason.isBlank() ? "unknown" : reason;
+        if (captureLatenciesByReason.containsKey(normalized)) return normalized;
+        if (captureLatenciesByReason.size() < MAX_DIAGNOSTIC_CAPTURE_REASONS - 1) {
+            return normalized;
+        }
+        return "other";
+    }
+
+    private static void logSlowCapture(
+            String origin, String reason, CaptureKey key, long queueAgeMs, long elapsedUs) {
+        long thresholdUs = Math.max(5_000L,
+                (long) ModConfig.get().performance.captureBudgetMicros * 4L);
+        if (elapsedUs < thresholdUs) return;
+        WMLogger.infoRateLimited("slow-capture-" + origin + '-' + reason, 30_000L,
+                "[perf] slowCapture origin=" + origin
+                        + " reason=" + reason
+                        + " dimension=" + key.dimension().identifier()
+                        + " chunk=" + key.chunkX() + ',' + key.chunkZ()
+                        + " queueAgeMs=" + queueAgeMs
+                        + " elapsedUs=" + elapsedUs
+                        + " thresholdUs=" + thresholdUs);
+    }
+
+    private static void deferExport(ExportRequest request) {
         synchronized (captureQueueLock) {
             if (pendingExport == null) {
-                pendingExport = new PendingExportRequest(
-                        notify, requiresPreCapture, preferredSourceId,
-                        preferredSourceType, containerSnapshot);
+                pendingExport = request;
             } else {
-                pendingExport = new PendingExportRequest(
-                        pendingExport.shouldNotify() || notify,
-                        pendingExport.requiresPreCapture() || requiresPreCapture,
-                        choosePreferred(preferredSourceId, pendingExport.preferredSourceId()),
-                        choosePreferred(preferredSourceType, pendingExport.preferredSourceType()),
-                        containerSnapshot != null ? containerSnapshot : pendingExport.containerSnapshot());
+                deferredExportCoalesced.incrementAndGet();
+                pendingExport = new ExportRequest(
+                        preferredTrigger(request.trigger(), pendingExport.trigger()),
+                        pendingExport.shouldNotify() || request.shouldNotify(),
+                        pendingExport.preCaptureAlreadyDone()
+                                && request.preCaptureAlreadyDone(),
+                        choosePreferred(request.preferredSourceId(),
+                                pendingExport.preferredSourceId()),
+                        choosePreferred(request.preferredSourceType(),
+                                pendingExport.preferredSourceType()),
+                        request.containerSnapshot() != null
+                                ? request.containerSnapshot()
+                                : pendingExport.containerSnapshot());
             }
         }
     }
 
     private static void tryStartDeferredExport(Minecraft client) {
-        PendingExportRequest request;
+        ExportRequest request;
         synchronized (captureQueueLock) {
             if (hasPendingCaptureWorkLocked() || exportInProgress.get() || pendingExport == null) {
                 return;
@@ -1155,9 +1390,7 @@ public final class DownloadManager {
             request = pendingExport;
             pendingExport = null;
         }
-        startBackgroundSync(client, request.shouldNotify(), !request.requiresPreCapture(),
-                request.preferredSourceId(), request.preferredSourceType(),
-                request.containerSnapshot());
+        startBackgroundSync(client, request);
     }
 
     private static void clearPendingCaptureState() {
@@ -1213,6 +1446,18 @@ public final class DownloadManager {
         return !isBlank(candidate) ? candidate : fallback;
     }
 
+    private static ExportTrigger preferredTrigger(
+            ExportTrigger candidate, ExportTrigger fallback) {
+        return candidate.priority >= fallback.priority ? candidate : fallback;
+    }
+
+    private static ExportRequest withContainerSnapshot(ExportRequest request) {
+        if (request.containerSnapshot() != null) return request;
+        return new ExportRequest(request.trigger(), request.shouldNotify(),
+                request.preCaptureAlreadyDone(), request.preferredSourceId(),
+                request.preferredSourceType(), ContainerTracker.snapshotSavedData());
+    }
+
     /**
      * Builds a conflict resolver for the given source, checking per-world overrides first.
      * If {@code sourceId} is {@code null}, the global config is used directly.
@@ -1254,6 +1499,43 @@ public final class DownloadManager {
         ChunkListener.evictStale(maxAgeMs, maxCount, playerDim, playerCX, playerCZ, maxDist);
     }
 
+    private static void resetDiagnosticSession() {
+        diagnosticSessionStartedMs = System.currentTimeMillis();
+        lastDiagnosticLogMs = diagnosticSessionStartedMs;
+        synchronized (captureQueueLock) {
+            coalescedCaptureHints = 0L;
+            droppedCaptureHints = 0L;
+            captureHintsByReason.clear();
+            captureLatenciesByReason.clear();
+        }
+        captureTickLatencies.reset();
+        unloadCaptureLatencies.reset();
+        worldFrameIntervals.reset();
+        worldMirrorTickWork.reset();
+        lastWorldFrameNs = 0L;
+        unloadCaptureFailures.set(0L);
+        captureBudgetOverruns.set(0L);
+        captureBudgetMaxOverrunUs.set(0L);
+        captureProcessed.set(0L);
+        captureCompleted.set(0L);
+        automaticExportSuppressed.set(0L);
+        deferredExportCoalesced.set(0L);
+        exportWorkerWallMs.set(0L);
+        exportFailures.set(0L);
+        lastExportMillis = 0L;
+        lastExportWritten = 0;
+        lastExportSettled = 0;
+        lastExportUnreadable = 0;
+        lastDurabilityIndexMillis = 0L;
+        lastExportTimings = new ChunkExporter.ExportTimings(0, 0, 0, 0, 0, 0, 0);
+        lastGcByCollector.clear();
+        for (GarbageCollectorMXBean bean : ManagementFactory.getGarbageCollectorMXBeans()) {
+            lastGcByCollector.put(bean.getName(), new GcSnapshot(
+                    Math.max(0L, bean.getCollectionCount()),
+                    Math.max(0L, bean.getCollectionTime())));
+        }
+    }
+
     private static void maybeLogPerformanceSnapshot(long nowMs) {
         if (!ModConfig.get().performance.diagnosticPerformanceLogging
                 || nowMs - lastDiagnosticLogMs < 30_000L) return;
@@ -1267,38 +1549,135 @@ public final class DownloadManager {
         StringBuilder collectors = new StringBuilder();
         for (GarbageCollectorMXBean bean : ManagementFactory.getGarbageCollectorMXBeans()) {
             if (collectors.length() > 0) collectors.append('|');
-            collectors.append(bean.getName().replace(' ', '_'));
-            if (bean.getCollectionCount() >= 0) gcCount += bean.getCollectionCount();
-            if (bean.getCollectionTime() >= 0) gcTimeMs += bean.getCollectionTime();
+            long currentCount = Math.max(0L, bean.getCollectionCount());
+            long currentTimeMs = Math.max(0L, bean.getCollectionTime());
+            GcSnapshot previous = lastGcByCollector.get(bean.getName());
+            long countDelta = previous == null ? 0L
+                    : Math.max(0L, currentCount - previous.count());
+            long timeDelta = previous == null ? 0L
+                    : Math.max(0L, currentTimeMs - previous.timeMs());
+            gcCount += countDelta;
+            gcTimeMs += timeDelta;
+            collectors.append(bean.getName().replace(' ', '_'))
+                    .append(':').append(countDelta).append('/').append(timeDelta);
+            lastGcByCollector.put(bean.getName(), new GcSnapshot(currentCount, currentTimeMs));
         }
-        long gcCountDelta = lastGcCount < 0 ? 0 : Math.max(0, gcCount - lastGcCount);
-        long gcTimeDelta = lastGcTimeMs < 0 ? 0 : Math.max(0, gcTimeMs - lastGcTimeMs);
-        lastGcCount = gcCount;
-        lastGcTimeMs = gcTimeMs;
+        LatencyWindow.Summary captureLatency = captureTickLatencies.snapshotAndReset();
+        LatencyWindow.Summary unloadLatency = unloadCaptureLatencies.snapshotAndReset();
+        LatencyWindow.Summary frameInterval = worldFrameIntervals.snapshotAndReset();
+        LatencyWindow.Summary tickWork = worldMirrorTickWork.snapshotAndReset();
+        long processed = captureProcessed.getAndSet(0L);
+        long completed = captureCompleted.getAndSet(0L);
+        long budgetOverruns = captureBudgetOverruns.getAndSet(0L);
+        long maxBudgetOverrunUs = captureBudgetMaxOverrunUs.getAndSet(0L);
+        long automaticSuppressed = automaticExportSuppressed.getAndSet(0L);
+        long deferredCoalesced = deferredExportCoalesced.getAndSet(0L);
+        long exportDutyMs = exportWorkerWallMs.getAndSet(0L);
         ChunkExporter.ExportTimings timings = lastExportTimings;
         WMLogger.info("[perf] pipeline=" + m.mode()
+                + " sessionMs=" + Math.max(0L, nowMs - diagnosticSessionStartedMs)
                 + " cache=" + ChunkListener.getTotalCount()
                 + " dirty=" + m.dirtyChunks()
                 + " captureQueue=" + m.pendingCaptures()
                 + " oldestHintMs=" + m.oldestCaptureAgeMs()
                 + " coalesced=" + m.coalescedHints()
                 + " dropped=" + m.droppedHints()
-                + " lastCaptureUs=" + m.lastCaptureMicros()
+                + " hintReasons=" + captureHintSummary()
+                + " captureReasonLatency=" + captureReasonLatencySummary()
+                + " captureTickCount=" + captureLatency.observations()
+                + " captureTickAvgUs=" + captureLatency.average()
+                + " captureTickP95Us=" + captureLatency.p95()
+                + " captureTickP99Us=" + captureLatency.p99()
+                + " captureTickMaxUs=" + captureLatency.maximum()
+                + " captureProcessed=" + processed
+                + " captureCompleted=" + completed
+                + " captureBudgetUs=" + ModConfig.get().performance.captureBudgetMicros
+                + " captureBudgetOverruns=" + budgetOverruns
+                + " captureBudgetMaxOverrunUs=" + maxBudgetOverrunUs
+                + " unloadCaptureCount=" + unloadLatency.observations()
+                + " unloadCaptureAvgUs=" + unloadLatency.average()
+                + " unloadCaptureP95Us=" + unloadLatency.p95()
+                + " unloadCaptureP99Us=" + unloadLatency.p99()
+                + " unloadCaptureMaxUs=" + unloadLatency.maximum()
+                + " unloadCaptureFailures=" + unloadCaptureFailures.get()
+                + " frameCount=" + frameInterval.observations()
+                + " frameAvgUs=" + frameInterval.average()
+                + " frameP95Us=" + frameInterval.p95()
+                + " frameP99Us=" + frameInterval.p99()
+                + " frameMaxUs=" + frameInterval.maximum()
+                + " wmTickCount=" + tickWork.observations()
+                + " wmTickAvgUs=" + tickWork.average()
+                + " wmTickP95Us=" + tickWork.p95()
+                + " wmTickP99Us=" + tickWork.p99()
+                + " wmTickMaxUs=" + tickWork.maximum()
+                + " automaticExportSuppressed=" + automaticSuppressed
+                + " deferredExportCoalesced=" + deferredCoalesced
+                + " exportWorkerDutyMs=" + exportDutyMs
                 + " lastExportMs=" + m.lastExportMillis()
                 + " dbLookupMs=" + timings.databaseLookupMs()
                 + " materializeMs=" + timings.materializeMs()
                 + " regionReadMs=" + timings.chunkReadMs()
                 + " resolveMergeWriteMs=" + timings.resolveMergeWriteMs()
                 + " regionFlushMs=" + timings.flushMs()
+                + " regionVerifyMs=" + timings.verificationMs()
                 + " entityWriteMs=" + timings.entityMs()
                 + " dbCommitMs=" + lastDurabilityIndexMillis
                 + " written=" + m.lastExportWritten()
                 + " settled=" + m.lastExportSettled()
+                + " unreadable=" + m.lastExportUnreadable()
                 + " failures=" + m.exportFailures()
                 + " heapMiB=" + usedMiB + "/" + committedMiB
-                + " gcCountDelta=" + gcCountDelta
-                + " gcTimeMsDelta=" + gcTimeDelta
+                + " gcCountDelta=" + gcCount
+                + " gcTimeMsDelta=" + gcTimeMs
                 + " gcCollectors=" + collectors);
+    }
+
+    private static String captureHintSummary() {
+        synchronized (captureQueueLock) {
+            if (captureHintsByReason.isEmpty()) return "none";
+            List<Map.Entry<String, CaptureHintCounters>> entries =
+                    new java.util.ArrayList<>(captureHintsByReason.entrySet());
+            entries.sort((left, right) -> Long.compare(
+                    right.getValue().received, left.getValue().received));
+            StringBuilder summary = new StringBuilder();
+            for (Map.Entry<String, CaptureHintCounters> entry : entries) {
+                if (summary.length() > 0) summary.append('|');
+                CaptureHintCounters counters = entry.getValue();
+                summary.append(entry.getKey())
+                        .append(':').append(counters.received)
+                        .append('/').append(counters.queued)
+                        .append('/').append(counters.coalesced)
+                        .append('/').append(counters.dropped);
+            }
+            return summary.toString();
+        }
+    }
+
+    private static String captureReasonLatencySummary() {
+        synchronized (captureQueueLock) {
+            if (captureLatenciesByReason.isEmpty()) return "none";
+            List<Map.Entry<String, LatencyWindow.Summary>> entries =
+                    new java.util.ArrayList<>();
+            for (Map.Entry<String, LatencyWindow> entry : captureLatenciesByReason.entrySet()) {
+                entries.add(Map.entry(entry.getKey(), entry.getValue().snapshotAndReset()));
+            }
+            entries.removeIf(entry -> entry.getValue().observations() == 0L);
+            if (entries.isEmpty()) return "none";
+            entries.sort((left, right) -> Long.compare(
+                    right.getValue().observations(), left.getValue().observations()));
+            StringBuilder summary = new StringBuilder();
+            for (Map.Entry<String, LatencyWindow.Summary> entry : entries) {
+                if (summary.length() > 0) summary.append('|');
+                LatencyWindow.Summary latency = entry.getValue();
+                summary.append(entry.getKey())
+                        .append(':').append(latency.observations())
+                        .append('/').append(latency.average())
+                        .append('/').append(latency.p95())
+                        .append('/').append(latency.p99())
+                        .append('/').append(latency.maximum());
+            }
+            return summary.toString();
+        }
     }
 
     // ── Export nearby region ──────────────────────────────────────────────────
@@ -1396,6 +1775,14 @@ public final class DownloadManager {
                     ChunkExporter.ExportResult result = ChunkExporter.exportChunks(
                             finalOut, snapshot, entitySnapshot, containerSnapshot,
                             new OverwriteResolver(), db);
+                    for (Map.Entry<ResourceKey<Level>, Set<ChunkPos>> dimEntry
+                            : result.unreadableChunks().entrySet()) {
+                        if (!db.removeUnreadableUpdates(
+                                dimEntry.getKey().identifier().toString(), dimEntry.getValue())) {
+                            throw new SQLException(
+                                    "Could not remove unreadable nearby-export durability rows");
+                        }
+                    }
                     for (Map.Entry<ResourceKey<Level>, Map<ChunkPos, ChunkExporter.WriteStamp>> dimEntry
                             : result.written().entrySet()) {
                         Map<ChunkPos, Long> timestamps = new HashMap<>();

@@ -14,6 +14,7 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * Manages the per-world SQLite database at {@code <worldFolder>/data/world_mirror.sqlite}.
@@ -219,6 +220,38 @@ public class ChunkDatabase implements Closeable {
         } catch (SQLException e) {
             WMLogger.warn("Chunk durability commit failed dimension=" + dimension
                     + " updates=" + timestamps.size(), e);
+            try { conn.rollback(); } catch (SQLException ignored) {}
+            return false;
+        } finally {
+            try { conn.setAutoCommit(true); } catch (SQLException ignored) {}
+        }
+    }
+
+    /**
+     * Removes durability claims for region entries that failed physical
+     * validation. A future capture must therefore write them again instead of
+     * being suppressed by a stale database row.
+     */
+    public boolean removeUnreadableUpdates(String dimension, Set<ChunkPos> chunks) {
+        if (chunks.isEmpty()) return true;
+        String sql = "DELETE FROM chunks WHERE source=? AND dimension=? AND x=? AND y=?";
+        try {
+            conn.setAutoCommit(false);
+            try (PreparedStatement ps = conn.prepareStatement(sql)) {
+                for (ChunkPos pos : chunks) {
+                    ps.setString(1, sourceId);
+                    ps.setString(2, dimension);
+                    ps.setInt(3, pos.getMinBlockX() >> 4);
+                    ps.setInt(4, pos.getMinBlockZ() >> 4);
+                    ps.addBatch();
+                }
+                ps.executeBatch();
+            }
+            conn.commit();
+            return true;
+        } catch (SQLException e) {
+            WMLogger.warn("Unreadable chunk durability cleanup failed dimension="
+                    + dimension + " chunks=" + chunks.size(), e);
             try { conn.rollback(); } catch (SQLException ignored) {}
             return false;
         } finally {

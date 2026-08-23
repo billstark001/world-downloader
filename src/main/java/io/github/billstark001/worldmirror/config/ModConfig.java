@@ -64,7 +64,7 @@ public class ModConfig implements ConfigData {
     @ConfigEntry.Gui.EnumHandler(option = ConfigEntry.Gui.EnumHandler.EnumDisplayOption.DROPDOWN)
     public SaveLocation defaultSaveLocation = SaveLocation.DOWNLOADED;
 
-    /** How often (seconds) the periodic sync fires while downloading is active. */
+    /** Stable export cadence and adaptive maximum durability latency, in seconds. */
     @ConfigEntry.Gui.Tooltip
     @ConfigEntry.BoundedDiscrete(min = 5, max = 600)
     public int syncIntervalSeconds = 30;
@@ -86,20 +86,20 @@ public class ModConfig implements ConfigData {
     public PerformanceConfig performance = new PerformanceConfig();
 
     public static class PerformanceConfig {
-        /** Main-thread time budget used by the stable capture queue. */
+        /** Non-adaptive scheduling ceiling used by every capture pipeline. */
         @ConfigEntry.Gui.Tooltip
         @ConfigEntry.BoundedDiscrete(min = 250, max = 5000)
         public int captureBudgetMicros = 1500;
 
-        /** Maximum dirty backlog before the adaptive writer flushes immediately. */
+        /** Dirty backlog that makes an adaptive high-watermark export eligible. */
         @ConfigEntry.Gui.Tooltip
         @ConfigEntry.BoundedDiscrete(min = 32, max = 8192)
         public int adaptiveDirtyHighWatermark = 512;
 
-        /** Maximum time an adaptive dirty revision may wait before an export begins. */
+        /** Minimum time between adaptive high-watermark exports. */
         @ConfigEntry.Gui.Tooltip
         @ConfigEntry.BoundedDiscrete(min = 1, max = 60)
-        public int adaptiveMaxLatencySeconds = 5;
+        public int adaptiveExportCooldownSeconds = 10;
 
         /** Upper bound for coalesced chunk-capture hints. */
         @ConfigEntry.Gui.Tooltip

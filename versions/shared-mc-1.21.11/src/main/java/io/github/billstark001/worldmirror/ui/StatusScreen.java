@@ -34,6 +34,8 @@ public class StatusScreen extends Screen {
     private boolean lastDownloadState;
     private Button toggleButton;
     private Component settingsFailure;
+    private long lastSyncTime;
+    private int conflictCount;
 
     protected StatusScreen() {
         super(Component.translatable("screen.worldmirror.status.title"));
@@ -43,6 +45,7 @@ public class StatusScreen extends Screen {
 
     @Override
     protected void init() {
+        loadPersistentStatus();
         int left = left();
         int tabWidth = (PANEL_WIDTH - 8) / 3;
         addRenderableWidget(Button.builder(tabLabel("screen.worldmirror.tab.status", 0), button -> switchTab(0))
@@ -108,7 +111,7 @@ public class StatusScreen extends Screen {
                         settingsFailure = Component.translatable("screen.worldmirror.move.failure.export_in_progress");
                         return;
                     }
-                    if (Files.isDirectory(DownloadManager.getOutputPath(Minecraft.getInstance()))) {
+                    if (Files.isDirectory(DownloadManager.previewOutputPath(Minecraft.getInstance()))) {
                         Minecraft.getInstance().setScreen(new SaveLocationMoveScreen(this, target));
                     } else {
                         DownloadManager.setMirrorSaveLocation(sourceId, target);
@@ -128,8 +131,8 @@ public class StatusScreen extends Screen {
     }
 
     private void addConflictButtons(int left) {
-        Path output = DownloadManager.getOutputPath(Minecraft.getInstance());
-        if (ConflictManager.countAllConflicts(output) > 0) {
+        Path output = DownloadManager.previewOutputPath(Minecraft.getInstance());
+        if (conflictCount > 0) {
             addRenderableWidget(Button.builder(Component.translatable("screen.worldmirror.status.overwriteAll"),
                     button -> { ConflictManager.clearAllConflicts(output, true); refresh(); })
                     .bounds(left, 108, 178, BUTTON_HEIGHT).build());
@@ -158,13 +161,12 @@ public class StatusScreen extends Screen {
         Minecraft client = Minecraft.getInstance();
         String sourceType = WorldMetadata.detectSourceType(client);
         String sourceId = WorldMetadata.detectSourceId(client);
-        String folder = MirrorMapping.getInstance().getMirrorFolderName(sourceId);
-        Path output = DownloadManager.getOutputPath(client);
+        String folder = MirrorMapping.getInstance().previewBaseFolderName(sourceId);
         int x = left();
         pairLine(graphics, "screen.worldmirror.status.sourceId", sourceType + " · " + sourceId,
                 "screen.worldmirror.status.mirrorPath", folder, x, 62);
         pairLine(graphics, "screen.worldmirror.status.chunks", String.valueOf(ChunkListener.getTotalCount()),
-                "screen.worldmirror.status.lastSync", lastSync(client, sourceId, sourceType).getString(), x, 76);
+                "screen.worldmirror.status.lastSync", lastSync().getString(), x, 76);
         graphics.drawString(font, Component.translatable(DownloadManager.isActive()
                 ? "screen.worldmirror.status.downloadActive" : "screen.worldmirror.status.downloadInactive"), x, 90, 0xFFE0E0E0);
         graphics.drawString(font, Component.translatable(DownloadManager.isExportInProgress()
@@ -179,14 +181,13 @@ public class StatusScreen extends Screen {
     private void renderSettings(GuiGraphics graphics) {
         Minecraft client = Minecraft.getInstance();
         graphics.drawCenteredString(font, Component.translatable("screen.worldmirror.tab.settingsHeader"), width / 2, 66, 0xFFE0E0E0);
-        line(graphics, "screen.worldmirror.status.outputPath", DownloadManager.getOutputPath(client).toString(), left(), 80);
+        line(graphics, "screen.worldmirror.status.outputPath", DownloadManager.previewOutputPath(client).toString(), left(), 80);
         line(graphics, "screen.worldmirror.status.xaeroOverlay", bridgeStatus().getString(), left(), 94);
         if (settingsFailure != null) graphics.drawCenteredString(font, settingsFailure, width / 2, 104, 0xFFFF5555);
     }
 
     private void renderConflicts(GuiGraphics graphics) {
-        Path output = DownloadManager.getOutputPath(Minecraft.getInstance());
-        int count = ConflictManager.countAllConflicts(output);
+        int count = conflictCount;
         graphics.drawCenteredString(font, Component.translatable("screen.worldmirror.tab.conflictsHeader"), width / 2, 66, 0xFFE0E0E0);
         if (count == 0) {
             graphics.drawCenteredString(font, Component.translatable("screen.worldmirror.status.noConflicts"), width / 2, 88, 0xFFE0E0E0);
@@ -226,14 +227,23 @@ public class StatusScreen extends Screen {
                 : Component.translatable("screen.worldmirror.status.xaeroOverlay.missing");
     }
 
-    private static Component lastSync(Minecraft client, String sourceId, String sourceType) {
+    private void loadPersistentStatus() {
+        Minecraft client = Minecraft.getInstance();
+        Path output = DownloadManager.previewOutputPath(client);
+        conflictCount = ConflictManager.countAllConflicts(output);
         try {
-            WorldMetadata metadata = WorldMetadata.loadOrCreate(DownloadManager.getOutputPath(client), sourceId, sourceType);
-            if (metadata.lastSyncTime == 0) return Component.translatable("screen.worldmirror.status.lastSyncNever");
-            return formatAge((System.currentTimeMillis() - metadata.lastSyncTime) / 1_000L);
+            WorldMetadata metadata = WorldMetadata.loadOrCreate(output,
+                    WorldMetadata.detectSourceId(client), WorldMetadata.detectSourceType(client));
+            lastSyncTime = metadata.lastSyncTime;
         } catch (Exception ignored) {
-            return Component.literal("?");
+            lastSyncTime = -1L;
         }
+    }
+
+    private Component lastSync() {
+        if (lastSyncTime < 0L) return Component.literal("?");
+        if (lastSyncTime == 0L) return Component.translatable("screen.worldmirror.status.lastSyncNever");
+        return formatAge((System.currentTimeMillis() - lastSyncTime) / 1_000L);
     }
 
     private static Component formatAge(long seconds) {

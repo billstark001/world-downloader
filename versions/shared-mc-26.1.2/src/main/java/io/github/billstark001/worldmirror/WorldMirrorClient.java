@@ -16,6 +16,7 @@ import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientChunkEvents;
 import net.fabricmc.fabric.api.client.keymapping.v1.KeyMappingHelper;
 import net.fabricmc.fabric.api.client.networking.v1.ClientPlayConnectionEvents;
+import net.fabricmc.fabric.api.client.rendering.v1.level.LevelRenderEvents;
 import net.fabricmc.loader.api.FabricLoader;
 import net.minecraft.client.KeyMapping;
 import net.minecraft.SharedConstants;
@@ -93,6 +94,7 @@ public class WorldMirrorClient implements ClientModInitializer {
         ClientChunkEvents.CHUNK_LOAD.register((world, chunk) ->
                 DownloadManager.queueChunkCapture(world, chunk.getPos(), "chunk-load"));
         ClientChunkEvents.CHUNK_UNLOAD.register(DownloadManager::captureChunkBeforeUnload);
+        LevelRenderEvents.END_MAIN.register(context -> DownloadManager.recordWorldFrame());
 
         // Apply the configured on-join behaviour whenever the player enters a world.
         // ClientPlayConnectionEvents.JOIN fires after the world object is available,

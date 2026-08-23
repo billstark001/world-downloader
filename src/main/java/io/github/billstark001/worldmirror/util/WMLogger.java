@@ -25,6 +25,10 @@ public final class WMLogger {
         LOGGER.info(message);
     }
 
+    public static void infoRateLimited(String key, long intervalMs, String message) {
+        logRateLimited(key, intervalMs, message, null, false);
+    }
+
     public static void warn(String message) {
         LOGGER.warn(message);
     }
@@ -39,6 +43,11 @@ public final class WMLogger {
 
     public static void warnRateLimited(
             String key, long intervalMs, String message, Throwable error) {
+        logRateLimited(key, intervalMs, message, error, true);
+    }
+
+    private static void logRateLimited(
+            String key, long intervalMs, String message, Throwable error, boolean warning) {
         Objects.requireNonNull(key, "key");
         long now = System.currentTimeMillis();
         long nextInterval = Math.max(1L, intervalMs);
@@ -54,7 +63,9 @@ public final class WMLogger {
         String summary = suppressed == 0
                 ? message
                 : message + " (suppressed=" + suppressed + ")";
-        if (error == null) {
+        if (!warning) {
+            LOGGER.info(summary);
+        } else if (error == null) {
             LOGGER.warn(summary);
         } else {
             LOGGER.warn(summary, error);

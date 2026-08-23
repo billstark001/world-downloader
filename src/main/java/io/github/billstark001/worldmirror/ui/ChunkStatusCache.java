@@ -72,7 +72,7 @@ public final class ChunkStatusCache {
         }
         if (client == null) return null;
         String sourceId = WorldMetadata.detectSourceId(client);
-        Path worldFolder = DownloadManager.getOutputPath(client);
+        Path worldFolder = DownloadManager.previewOutputPath(client);
         if (sourceId == null || worldFolder == null) return null;
         return new StatusTarget(worldFolder, sourceId, false);
     }
