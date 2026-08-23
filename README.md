@@ -22,7 +22,7 @@ in Minecraft's singleplayer world list.
 | **Container tracking** | The mod intercepts inventory packets when you open a chest, barrel, hopper, furnace, or any other container and saves the item stacks. They are merged into the block entity NBT on export. Double chests are handled correctly (each half is saved to its own position). |
 | **Block entity data** | Signs (text), beacons (effects), banners (patterns), player heads (owner), lecterns (stored book), and all other block entities whose data the server sends to the client are persisted through Minecraft's chunk serialization path. |
 | **World–mirror mapping** | Every detected server address or singleplayer world name is persistently mapped to a sanitised local folder name in `config/worldmirror/mirrors.json`. Different aliases for the same server are currently separate source IDs. |
-| **Per-world settings** | Save location and conflict strategy can be overridden per world from the status screen without touching the global config. |
+| **Per-world settings** | Save location and conflict strategy can be overridden per world. Time, weather, and difficulty can also be copied manually from the current source world. |
 | **Conflict resolution** | Three built-in strategies for chunks that already exist on disk: *Overwrite* (default), *Ignore* (keep local), and *Manual* (save the server chunk to `conflict_chunks/` in MCA format for later review). |
 | **Built-in Chunk Map** | Full-screen draggable and zoomable map of recorded chunks. Viewport-indexed snapshots, low-zoom bucket aggregation, and merged boundaries keep large views responsive. Colors show freshness/source; red marks unresolved conflicts. |
 | **Xaero's World Map Overlay** | Optionally render the same status layer on Xaero's fullscreen map through Xaero World Map Bridge. Xaero's World Map and the bridge are both required for this integration. |
@@ -55,11 +55,12 @@ All keybindings are rebindable in *Options → Controls → World Mirror*.
 The status screen shows:
 
 - **Source info** — type (singleplayer / server), source ID, local mirror folder name
-- **Statistics** — total chunks cached across all dimensions, time since last sync
+- **Statistics** — total chunks cached across all dimensions, time since the last
+  successful sync
 - **Live status** — download active/inactive, export running/idle
 - **Action buttons** — Start/Stop Download, Export Now, Clear Data, **Export Nearby Region**
 - **Conflicts tab** — count of stored conflict chunks, with *Overwrite All* and *Discard All* buttons, plus **Open Chunk Map** to review conflicts per-chunk
-- **Per-world settings** — save-location and conflict-strategy overrides stored in `mirrors.json`; moving an existing mirror requires confirmation and is blocked while downloading or exporting
+- **Per-world settings** — save-location and conflict-strategy overrides stored in `mirrors.json`, plus manual time, weather, and difficulty sync actions; moving an existing mirror requires confirmation and is blocked while downloading or exporting
 - **Integration status** — output path and Xaero World Map Bridge availability
 - **Global Settings** — shortcut to the Cloth Config-generated settings screen
 
@@ -87,6 +88,9 @@ is also available from *Mod Menu → World Mirror → Settings*.
 | Setting | Values | Default |
 |---------|--------|---------|
 | Save location | `Downloaded Folder` / `Saves Folder` | `Downloaded Folder` |
+| New mirror time | `Follow Current World` / `Morning` | `Follow Current World` |
+| New mirror weather | `Follow Current World` / `Clear` | `Follow Current World` |
+| New mirror difficulty | `Follow Current World` / `Peaceful` | `Follow Current World` |
 | Sync interval / adaptive maximum durability latency | 5–600 s | 30 s |
 | Download pipeline | `Stable Periodic` / `Experimental Adaptive` | `Stable Periodic` |
 | Conflict strategy | `Overwrite` / `Ignore` / `Manual` | `Overwrite` |
@@ -183,7 +187,7 @@ payload shapes are left untouched.
 | `parentMirrorId` | Optional identity of the mirror from which a nearby export was created |
 | `sourceType` | `singleplayer` or `server` |
 | `sourceId` | `local:<level-name>` or `server:<address>` |
-| `lastSyncTime` | Unix-millisecond timestamp of the most recent sync |
+| `lastSyncTime` | Unix-millisecond timestamp of the most recent fully successful synchronization pass |
 | `worldgenSchema` | Semantic schema of the generated mirror dimensions |
 | `worldgenAssetRevision` / `worldgenAssetDataVersion` | Embedded data-pack revision and Minecraft data version |
 | `legacyVoidChunkCleanupRevision` | Completion marker for the backed-up legacy void-chunk cleanup |
@@ -382,37 +386,11 @@ When adding or removing a Minecraft target:
 
 ---
 
-## Architecture Notes
+## Implementation Notes
 
-- `DownloadManager` is the lifecycle/command facade. `DownloadCaptureQueue` owns bounded
-  game-thread capture and coalescing; `DownloadExportCoordinator` owns serialized background
-  durability transactions; `MirrorMapping` owns output-path selection and claiming.
-- Stable periodic and adaptive scheduling are parallel `DownloadPipeline` implementations.
-  Adding another strategy should not add a new branch-shaped scheduler to the manager.
-- `ChunkDataMixin` supplies capture hints, `DownloadCaptureQueue` performs Minecraft chunk
-  serialization on the game thread, and `ChunkListener` owns dimension-aware captured/dirty
-  state. Source transitions clear live chunk, entity, and container state; immutable dirty
-  snapshots retain their own lighting overlays until their export finishes.
-- Container data is observed in `ContainerMixin` and stored in `ContainerTracker`.
-  `EntityTracker` performs vanilla serialization on the game thread;
-  `EntitySnapshotStore` owns versioned partial/complete reconciliation independently of
-  terrain eviction; `EntityRegionWriter` performs UUID-aware atomic entity-region merges.
-- Built-in and Xaero rendering share `ChunkMapView` and use asynchronous status
-  snapshots, viewport-indexed lookups, low-zoom bucket aggregation, coalesced fill runs,
-  and merged boundaries.
-- Xaero's World Map overlay is optional and uses Xaero World Map Bridge's public overlay API; the bridge owns Xaero-specific mixins and fallbacks.
-- The actual disk I/O runs on the single `WM-Export` worker. Terrain-region validation and
-  the SQLite durability-index commit must succeed before terrain revisions are
-  acknowledged. Entity revisions are acknowledged only after their atomic entity-region
-  merge succeeds; failed conflict application retains the conflict MCA for retry.
-- The dirty-check (`CapturedChunk.capturedAtMs` vs `data/world_mirror.sqlite`) ensures
-  unchanged chunks are not re-written on every periodic sync.
-- Version-neutral `WorldStructureCreator` and `StatusScreen` bodies live in root `src`.
-  Per-target `WorldStructureApi`, `StatusScreenApi`, and `WMPlayerMessages` classes are thin
-  Minecraft-API translation layers under `versions/shared-mc-<version>`.
-- Region files are read and written using the bundled MIT-licensed
-  [ens-gijs/NBT](https://github.com/ens-gijs/NBT) fork of
-  [Querz/NBT](https://github.com/Querz/NBT).
+Contributor-facing architecture, durability, logging, and vendored-library guidance lives
+in [CONTRIBUTING.md](CONTRIBUTING.md). The third-party SQLite contract is documented in
+[DATABASE.md](DATABASE.md).
 
 ## License
 

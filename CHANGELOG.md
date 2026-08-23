@@ -20,6 +20,16 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Reconciled UUID moves across chunks and regions, recursively removed stale passenger
   copies, preserved unobserved on-disk entities during partial observations, and retained
   failed entity revisions for retry.
+- Empty entity MCA placeholders no longer abort dimension-wide entity writes. Target
+  placeholders are replaced atomically, and region/UUID verification now completes before
+  entity revisions are acknowledged.
+- The status screen now reads an open mirror's original source and metadata directly,
+  refreshes metadata when an export finishes, and labels the timestamp as the last
+  successful sync.
+- New mirrors copy the source world's time, weather, and difficulty by default, with
+  configurable morning, clear, and Peaceful fallbacks. Existing mirrors expose separate
+  manual sync actions for those settings, preventing hostile entities from being discarded
+  when a mirror was created with the wrong difficulty.
 - Preserved immutable terrain, entity, and container snapshots when a stop-time export is
   deferred behind an active worker, preventing disconnect races from losing the final
   observed state.

@@ -37,13 +37,15 @@ Captured world state is scoped to one source world. Join, server-world, and dime
 transitions must not allow cached chunks, entities, containers, or lighting overlays to
 leak into another source. Background work receives immutable snapshots that remain valid
 after live caches are cleared. A region write is durable only after file validation and
-the SQLite index commit; failed conflict application must retain its conflict file.
+the persistence step appropriate to that data: terrain also requires its SQLite index
+commit, while entity output requires post-write region and dimension-wide UUID
+verification. Failed conflict application must retain its conflict file.
 
 Entity dirtiness is independent from terrain-cache retention. Never prune entity updates
-because a terrain entry was evicted. A successful atomic entity-region replacement
-acknowledges only the exact captured entity revisions it represents. Stop-time exports
-deferred behind an active worker must carry immutable terrain, entity, and container
-snapshots so disconnect or a new source cannot change their meaning.
+because a terrain entry was evicted. A successfully reopened and UUID-verified
+entity-region replacement acknowledges only the exact captured revisions it represents.
+Stop-time exports deferred behind an active worker must carry immutable terrain, entity,
+and container snapshots so disconnect or a new source cannot change their meaning.
 
 Version-specific saved-data repairs belong in `WorldStructureApi`. Match only a known
 World Mirror-owned malformed shape, preserve unrelated or extended payloads, replace the
@@ -152,11 +154,12 @@ trigger and stage timings; periodic snapshots report worker duty time, capture
 budget overruns, suppressed automatic requests, and deferred explicit-request
 coalescing.
 
-Region files are not durable merely because `flush()` returned. New region-write
-paths must validate the Anvil location table, close and reopen the file, decode
-each staged entry, and only then advance the SQLite durability index. Any entry
-that fails validation remains dirty for retry, and stale durability rows for an
-unreadable entry must be removed.
+Region files are not durable merely because `flush()` returned. Terrain writes must
+validate the Anvil location table, reopen and decode each staged entry, and only then
+advance the SQLite durability index. Entity writes must reopen affected chunks and
+verify affected UUIDs across the dimension before acknowledging revisions. Failed
+validation remains dirty for retry; stale terrain durability rows for unreadable entries
+must be removed.
 
 Before merging a logging change, search the complete source tree for direct
 console/logging calls, check that recurring failures are limited, verify that
