@@ -71,13 +71,13 @@ class MirrorWorldContextTest {
         WorldMetadata current = metadata();
         current.mirrorId = "mirror-id";
 
-        NearbyExportLineage.Result inherited = NearbyExportLineage.resolve(
-                NearbyExportLineage.Choice.INHERIT_ORIGINAL, current, "fallback", "server");
+        NearbyExporter.Lineage inherited = NearbyExporter.resolveLineage(
+                NearbyExporter.Choice.INHERIT_ORIGINAL, current, "fallback", "server");
         assertEquals("server:example.test", inherited.sourceId());
         assertEquals("mirror-id", inherited.parentMirrorId());
 
-        NearbyExportLineage.Result derived = NearbyExportLineage.resolve(
-                NearbyExportLineage.Choice.CURRENT_MIRROR, current, "fallback", "server");
+        NearbyExporter.Lineage derived = NearbyExporter.resolveLineage(
+                NearbyExporter.Choice.CURRENT_MIRROR, current, "fallback", "server");
         assertEquals("mirror:mirror-id", derived.sourceId());
         assertEquals("mirror", derived.sourceType());
     }

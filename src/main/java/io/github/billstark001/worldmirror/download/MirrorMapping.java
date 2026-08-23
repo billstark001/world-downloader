@@ -2,6 +2,7 @@ package io.github.billstark001.worldmirror.download;
 
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
+import io.github.billstark001.worldmirror.config.ModConfig;
 import io.github.billstark001.worldmirror.util.WMLogger;
 import net.fabricmc.loader.api.FabricLoader;
 
@@ -204,6 +205,72 @@ public class MirrorMapping {
         return (v != null && !v.isBlank()) ? v : null;
     }
 
+    // ── Output directory resolution ─────────────────────────────────────────
+
+    ModConfig.SaveLocation effectiveSaveLocation(String sourceId) {
+        String configured = getPerWorldSaveLocation(sourceId);
+        if (configured != null) {
+            try {
+                return ModConfig.SaveLocation.valueOf(configured);
+            } catch (IllegalArgumentException ignored) {
+                // Fall through to the current global default.
+            }
+        }
+        return ModConfig.get().defaultSaveLocation;
+    }
+
+    Path previewOutputPath(String sourceId) {
+        return previewOutputPath(sourceId, effectiveSaveLocation(sourceId));
+    }
+
+    Path previewOutputPath(String sourceId, ModConfig.SaveLocation saveLocation) {
+        String baseName = previewBaseFolderName(sourceId);
+        String resolved = previewResolvedFolderName(sourceId, saveLocation.name());
+        return outputRoot(saveLocation).resolve(resolved == null ? baseName : resolved);
+    }
+
+    void setSaveLocation(String sourceId, ModConfig.SaveLocation saveLocation) {
+        Path target = selectOutputPath(sourceId, saveLocation);
+        recordMirrorLocation(sourceId, saveLocation.name(), target.getFileName().toString());
+    }
+
+    Path selectOutputPath(String sourceId, ModConfig.SaveLocation saveLocation) {
+        Path base = outputRoot(saveLocation);
+        String baseName = previewBaseFolderName(sourceId);
+        String resolved = previewResolvedFolderName(sourceId, saveLocation.name());
+        if (resolved != null) {
+            Path reserved = base.resolve(resolved);
+            if (isFolderFreeOrOwned(reserved, sourceId)) return reserved;
+        }
+        return resolveOutputPath(base, baseName, sourceId);
+    }
+
+    Path claimOutputDirectory(String sourceId) throws java.io.IOException {
+        ModConfig.SaveLocation saveLocation = effectiveSaveLocation(sourceId);
+        Path base = outputRoot(saveLocation);
+        Files.createDirectories(base);
+
+        String baseName = previewBaseFolderName(sourceId);
+        Path candidate = selectOutputPath(sourceId, saveLocation);
+        while (true) {
+            try {
+                Files.createDirectory(candidate);
+                break;
+            } catch (java.nio.file.FileAlreadyExistsException raced) {
+                if (WorldMetadata.isOwnedBy(candidate, sourceId)) break;
+            }
+            candidate = selectOutputPath(sourceId, saveLocation);
+        }
+
+        String resolvedName = candidate.getFileName().toString();
+        recordResolvedFolderName(sourceId, saveLocation.name(), resolvedName);
+        if (!resolvedName.equals(baseName)) {
+            WMLogger.debug("Folder name collision resolved: '"
+                    + baseName + "' → '" + resolvedName + "'");
+        }
+        return candidate;
+    }
+
     // ── Per-world conflict strategy ───────────────────────────────────────────
 
     /**
@@ -249,6 +316,26 @@ public class MirrorMapping {
         if (name.isBlank()) name = "unnamed";
         if (name.length() > 64) name = name.substring(0, 64);
         return name;
+    }
+
+    private static Path outputRoot(ModConfig.SaveLocation saveLocation) {
+        return saveLocation == ModConfig.SaveLocation.SAVES
+                ? FabricLoader.getInstance().getGameDir().resolve("saves")
+                : FabricLoader.getInstance().getGameDir().resolve("downloaded_worlds");
+    }
+
+    private static Path resolveOutputPath(Path base, String folderName, String sourceId) {
+        Path candidate = base.resolve(folderName);
+        if (isFolderFreeOrOwned(candidate, sourceId)) return candidate;
+        for (int suffix = 2; suffix < Integer.MAX_VALUE; suffix++) {
+            candidate = base.resolve(folderName + "_" + suffix);
+            if (isFolderFreeOrOwned(candidate, sourceId)) return candidate;
+        }
+        throw new IllegalStateException("No collision-free mirror folder name is available");
+    }
+
+    private static boolean isFolderFreeOrOwned(Path folder, String sourceId) {
+        return !Files.exists(folder) || WorldMetadata.isOwnedBy(folder, sourceId);
     }
 
     private static Path configDir() {

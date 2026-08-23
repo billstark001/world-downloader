@@ -2,7 +2,7 @@ package io.github.billstark001.worldmirror.ui;
 
 import io.github.billstark001.worldmirror.download.DownloadManager;
 import io.github.billstark001.worldmirror.download.MirrorWorldContext;
-import io.github.billstark001.worldmirror.download.NearbyExportLineage;
+import io.github.billstark001.worldmirror.download.NearbyExporter;
 import net.fabricmc.api.EnvType;
 import net.fabricmc.api.Environment;
 import net.minecraft.client.Minecraft;
@@ -32,7 +32,7 @@ public class ExportNearbyScreen extends Screen {
 
     private int radius = RADIUS_DEFAULT;
     private EditBox nameField;
-    private NearbyExportLineage.Choice lineageChoice = NearbyExportLineage.Choice.INHERIT_ORIGINAL;
+    private NearbyExporter.Choice lineageChoice = NearbyExporter.Choice.INHERIT_ORIGINAL;
     private boolean choosingLineage;
 
     private final Screen parent;
@@ -64,9 +64,9 @@ public class ExportNearbyScreen extends Screen {
         if (choosingLineage) {
             addRenderableWidget(Button.builder(lineageLabel(), btn -> {
                 lineageChoice = switch (lineageChoice) {
-                    case INHERIT_ORIGINAL -> NearbyExportLineage.Choice.CURRENT_MIRROR;
-                    case CURRENT_MIRROR -> NearbyExportLineage.Choice.INDEPENDENT;
-                    case INDEPENDENT -> NearbyExportLineage.Choice.INHERIT_ORIGINAL;
+                    case INHERIT_ORIGINAL -> NearbyExporter.Choice.CURRENT_MIRROR;
+                    case CURRENT_MIRROR -> NearbyExporter.Choice.INDEPENDENT;
+                    case INDEPENDENT -> NearbyExporter.Choice.INHERIT_ORIGINAL;
                 };
                 btn.setMessage(lineageLabel());
             }).bounds(cx - 100, cy - 25, 200, 20).build());
