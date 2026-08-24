@@ -122,12 +122,13 @@ one GitHub Release. Its release channel and pre-release flag are derived from th
 plain semantic versions are stable, `-alpha...` versions are alpha, and other suffixes are
 beta.
 
-Modrinth publishing is optional. The project ID is configured in the workflow as
-`RjnX4gR2`; to enable publishing, add an Actions repository secret named
-`MODRINTH_TOKEN`. Use a Modrinth personal access token belonging to a project team member
-with the minimum `VERSION_CREATE` scope. When the secret is absent, tag releases still
-publish to GitHub and report that Modrinth was skipped. Each enabled Modrinth release is a
-three-entry matrix, with one primary JAR and one exact Minecraft version per entry.
+Modrinth publishing is optional. To enable it, configure an Actions repository variable
+named `MODRINTH_PROJECT_ID` with the Modrinth project slug or ID, and an Actions repository
+secret named `MODRINTH_TOKEN`. Use a Modrinth personal access token belonging to a project
+team member with the minimum `VERSION_CREATE` scope. When either setting is absent, tag
+releases still publish to GitHub and report that Modrinth was skipped. Each enabled
+Modrinth release is a three-entry matrix, with one primary JAR and one exact Minecraft
+version per entry. Never hard-code deployment project IDs or tokens in the workflow.
 
 `workflow_dispatch` is the recovery path for an existing tag. It uses the same validation,
 build, and publishing jobs; Modrinth is off by default to make retrying only the GitHub

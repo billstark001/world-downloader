@@ -35,6 +35,7 @@ jobs:
     env:
       RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
       WANT_MODRINTH: ${{ github.event_name == 'push' || inputs.publish_modrinth }}
+      MODRINTH_PROJECT_ID: ${{ vars.MODRINTH_PROJECT_ID }}
       MODRINTH_TOKEN: ${{ secrets.MODRINTH_TOKEN }}
     steps:
       - name: Checkout release tag
@@ -71,10 +72,17 @@ jobs:
           fi
 
           publish_modrinth=false
-          if [[ "$WANT_MODRINTH" == "true" && -n "$MODRINTH_TOKEN" ]]; then
+          if [[ "$WANT_MODRINTH" == "true" \
+                && -n "$MODRINTH_PROJECT_ID" \
+                && -n "$MODRINTH_TOKEN" ]]; then
             publish_modrinth=true
           elif [[ "$WANT_MODRINTH" == "true" ]]; then
-            echo '::notice::MODRINTH_TOKEN is not configured; skipping Modrinth publishing.'
+            if [[ -z "$MODRINTH_PROJECT_ID" ]]; then
+              echo '::notice::MODRINTH_PROJECT_ID repository variable is not configured; skipping Modrinth publishing.'
+            fi
+            if [[ -z "$MODRINTH_TOKEN" ]]; then
+              echo '::notice::MODRINTH_TOKEN is not configured; skipping Modrinth publishing.'
+            fi
           fi
 
           {
@@ -169,7 +177,7 @@ jobs:
       - name: Publish Minecraft ${{ matrix.minecraft }} to Modrinth
         uses: Kir-Antipov/mc-publish@v3.3
         with:
-          modrinth-id: RjnX4gR2
+          modrinth-id: ${{ vars.MODRINTH_PROJECT_ID }}
           modrinth-token: ${{ secrets.MODRINTH_TOKEN }}
           files: build/release/world-mirror-${{ needs.build.outputs.version }}+${{ matrix.minecraft }}-fabric.jar
           name: ${{ needs.build.outputs.release_name }} for Minecraft ${{ matrix.minecraft }}
