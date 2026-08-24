@@ -53,6 +53,26 @@ file atomically, and exercise the target Minecraft codec in a round-trip test. A
 that does not use that saved-data file should provide only the no-op adapter required by
 the shared orchestrator.
 
+## UI control policy
+
+User-selectable enums are selection-only listboxes. Do not expose editable enum text or
+one-click value cycling. The closed control and every open-list row must use the same
+field-specific translation function; raw serialized enum names are permitted only in the
+JSON file, never as the normal UI label. Register new `ModConfig` enums through the shared
+enum GUI provider rather than adding field-by-field screen code.
+
+An open list is a temporary overlay above surrounding controls. It must retain a visible
+current-value marker and close after any selection, on outside click, on Escape, and when
+focus leaves the control. Opening and closing without choosing must not change the pending
+value. Native-screen lists should be no wider or taller than their content requires and
+must not imitate a second full-width form row when a compact value-aligned popup suffices.
+
+Changes to selection controls require updating and running
+`docs/enum-dropdown-manual-test.md` on every supported Minecraft target. Test translated
+closed/open labels, repeated open/close, selection of the already-current value, mouse and
+keyboard focus loss, outside click, Escape, scrolling where applicable, nested-section
+overlay order, save/cancel/default behavior, and serialized-name compatibility.
+
 ## Documentation and release policy
 
 Documentation changes are part of a feature or compatibility change, not a later release

@@ -171,7 +171,7 @@ Each dimension directory contains the target version's `region/`, `entities/`, a
 `poi/` structure. World Mirror also creates the player-data and saved-data directories
 required by that version.
 
-Minecraft 26.1.2 and 26.2 also use `data/minecraft/world_clocks.dat`. World Mirror 0.4.1
+Minecraft 26.1.2 and 26.2 also use `data/minecraft/world_clocks.dat`. World Mirror
 generates its payload through Minecraft's `PackedClockStates` codec and automatically
 repairs the exact extra `data.clocks` wrapper produced by World Mirror 0.4.0. Other clock
 payload shapes are left untouched.
@@ -237,7 +237,7 @@ as `container.chest` are not persisted as custom names.
 
 ---
 
-## Capture Limits in 0.4.1
+## Capture Limits
 
 World Mirror is client-side and cannot reconstruct data the server never sends. In
 particular:

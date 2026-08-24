@@ -15,6 +15,8 @@ import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
 import java.util.Locale;
+import java.util.Optional;
+import java.util.function.Function;
 
 /** Installs a selection-only Cloth Config provider for every enum field. */
 @Environment(EnvType.CLIENT)
@@ -36,16 +38,19 @@ public final class EnumDropdownGui {
             String translationKey, Field field, Object config, Object defaults, Object registry) {
         List<Enum> values = Arrays.asList((Enum[]) field.getType().getEnumConstants());
         Enum current = Utils.getUnsafely(field, config);
+        Function<Enum, Component> label = value -> valueLabel(translationKey, value);
 
-        DropdownMenuBuilder<Enum> builder = ConfigEntryBuilder.create().startDropdownMenu(
-                        Component.translatable(translationKey), current,
-                        input -> findByLabel(values, translationKey, input),
-                        value -> valueLabel(translationKey, value))
-                .setSelections(values)
-                .setSuggestionMode(false)
-                .setDefaultValue(() -> Utils.getUnsafely(field, defaults))
-                .setSaveConsumer(value -> Utils.setUnsafely(field, config, value));
-        return Collections.singletonList(builder.build());
+        ClosingDropdownEntry<Enum> entry = new ClosingDropdownEntry<>(
+                Component.translatable(translationKey),
+                ConfigEntryBuilder.create().getResetButtonKey(),
+                Optional::empty,
+                () -> Utils.getUnsafely(field, defaults),
+                value -> Utils.setUnsafely(field, config, value),
+                values,
+                DropdownMenuBuilder.TopCellElementBuilder.of(
+                        current, input -> findByLabel(values, translationKey, input), label),
+                DropdownMenuBuilder.CellCreatorBuilder.of(label));
+        return Collections.singletonList(entry);
     }
 
     @SuppressWarnings("rawtypes")

@@ -12,16 +12,21 @@ Run this checklist on Minecraft 1.21.11, 26.1.2, and 26.2.
 4. Repeat inside collapsed sections near the top and bottom of the viewport. Verify the list is
    drawn above neighbouring entries, remains focused, and scrolls with normal Cloth Config input.
 5. Verify keyboard/controller focus opens the list, moves through choices, selects a choice, and
-   Escape closes it without changing the pending value.
-6. Verify Cancel discards edits, Done saves edits, and Reset restores defaults.
-7. Inspect `config/worldmirror.json` and confirm enum values still use uppercase names such as
+   Escape or moving focus away closes it without changing the pending value.
+6. Select the already-current value and verify the list still closes. Reopen and close each field
+   repeatedly to check for stale focus or an accidental selection.
+7. Verify Cancel discards edits, Done saves edits, and Reset restores defaults.
+8. Inspect `config/worldmirror.json` and confirm enum values still use uppercase names such as
    `DOWNLOADED`, `STABLE_PERIODIC`, and `KEEP`.
 
 ## Per-world settings
 
 1. Open World Mirror Status > Settings in a source world.
 2. Open Save Location and Conflict Strategy. Verify the full translated list appears over the
-   surrounding controls, the current value has a marker, and no cycling or typing is required.
-3. Verify mouse selection, keyboard/controller focus and activation, outside click, and Escape.
-4. Verify choosing the current value is a no-op; changing Save Location still shows the move
-   confirmation when a mirror exists; changing Conflict Strategy persists after reopening.
+   surrounding controls, is compact and aligned to the value side, the current value has a marker,
+   and no cycling or typing is required.
+3. Verify mouse selection, keyboard/controller focus and activation, outside click, focus loss,
+   and Escape all close the list without leaving disabled controls behind.
+4. Verify choosing the current value closes the list as a no-op; changing Save Location still
+   shows the move confirmation when a mirror exists; changing Conflict Strategy persists after
+   reopening.

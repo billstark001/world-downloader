@@ -24,6 +24,8 @@ import net.minecraft.network.chat.Component;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Locale;
 import java.util.function.Consumer;
 import java.util.function.Function;
@@ -33,6 +35,9 @@ import java.util.function.Function;
 public class StatusScreen extends StatusScreenApi {
     private static final int PANEL_WIDTH = 360;
     private static final int BUTTON_HEIGHT = 20;
+    private static final int DROPDOWN_WIDTH = 220;
+    private static final int DROPDOWN_ROW_HEIGHT = 18;
+    private static final int DROPDOWN_ROW_GAP = 1;
     private static int activeTab;
 
     private boolean lastExportState;
@@ -44,6 +49,8 @@ public class StatusScreen extends StatusScreenApi {
     private int conflictCount;
     private StatusContext statusContext;
     private boolean dropdownOpen;
+    private Button dropdownOpener;
+    private final List<Button> dropdownChoices = new ArrayList<>();
 
     private record StatusContext(
             String sourceId,
@@ -112,6 +119,12 @@ public class StatusScreen extends StatusScreenApi {
 
     @Override
     public boolean mouseClicked(MouseButtonEvent click, boolean doubled) {
+        if (dropdownOpen && !dropdownOpener.isMouseOver(click.x(), click.y())
+                && dropdownChoices.stream().noneMatch(
+                        choice -> choice.isMouseOver(click.x(), click.y()))) {
+            refresh();
+            return true;
+        }
         boolean handled = super.mouseClicked(click, doubled);
         if (!handled && dropdownOpen) {
             refresh();
@@ -214,25 +227,30 @@ public class StatusScreen extends StatusScreenApi {
             Button opener, String labelKey, T current, T[] values,
             Function<T, Component> valueLabel, Consumer<T> onSelect) {
         dropdownOpen = true;
+        dropdownOpener = opener;
+        dropdownChoices.clear();
         opener.setMessage(dropdownLabel(labelKey, valueLabel.apply(current), true));
         for (GuiEventListener child : children()) {
             if (child instanceof Button button && button != opener) button.active = false;
         }
 
-        int listHeight = values.length * BUTTON_HEIGHT;
+        int rowStep = DROPDOWN_ROW_HEIGHT + DROPDOWN_ROW_GAP;
+        int listHeight = values.length * rowStep - DROPDOWN_ROW_GAP;
         int listY = opener.getY() + BUTTON_HEIGHT;
         if (listY + listHeight > height - 32) listY = opener.getY() - listHeight;
+        int listX = opener.getX() + opener.getWidth() - DROPDOWN_WIDTH;
         Button selected = null;
         for (int index = 0; index < values.length; index++) {
             T value = values[index];
             Component message = value == current
-                    ? Component.literal("§e▶ ").append(valueLabel.apply(value))
+                    ? Component.literal("§e✓ ").append(valueLabel.apply(value))
                     : Component.literal("  ").append(valueLabel.apply(value));
             Button choice = addRenderableWidget(Button.builder(message,
                             button -> onSelect.accept(value))
-                    .bounds(opener.getX(), listY + index * BUTTON_HEIGHT,
-                            opener.getWidth(), BUTTON_HEIGHT)
+                    .bounds(listX, listY + index * rowStep,
+                            DROPDOWN_WIDTH, DROPDOWN_ROW_HEIGHT)
                     .build());
+            dropdownChoices.add(choice);
             if (value == current) selected = choice;
         }
         if (selected != null) setFocused(selected);

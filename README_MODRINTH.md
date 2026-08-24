@@ -75,6 +75,9 @@ Uncaptured terrain is intentionally void in the generated save.
 Press **I**, open **Settings**, then choose **Global Settings**. Optional Mod Menu provides
 another shortcut to the same screen.
 
+Enum settings are selection-only lists: open the control to see every translated choice,
+then select one item. Per-world Save Location and Conflict Strategy use the same interaction.
+
 - **Downloaded Folder** (default): saves to `<.minecraft>/downloaded_worlds/`; useful for
   keeping mirrors separate, but not listed in Singleplayer.
 - **Saves Folder**: saves to `<.minecraft>/saves/`; immediately visible in Singleplayer.
