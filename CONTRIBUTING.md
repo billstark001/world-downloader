@@ -85,6 +85,28 @@ target. The shared `run/mods` directory may contain only one enabled Minecraft-v
 build of Xaero's World Map at a time. A core smoke test may disable the external bridge and
 map by mod ID, but report that limitation instead of presenting it as an integration test.
 
+### Release automation
+
+Releases use the single `.github/workflows/release.yml` workflow. Update `mod_version` in
+`gradle.properties` and make the first release section in `CHANGELOG.md` use that exact
+version, then push the corresponding `v<version>` tag. The workflow validates those three
+values, builds all targets once, checks the exact three distributable JAR names, and creates
+one GitHub Release. Its release channel and pre-release flag are derived from the version:
+plain semantic versions are stable, `-alpha...` versions are alpha, and other suffixes are
+beta.
+
+Modrinth publishing is optional. The project ID is configured in the workflow as
+`RjnX4gR2`; to enable publishing, add an Actions repository secret named
+`MODRINTH_TOKEN`. Use a Modrinth personal access token belonging to a project team member
+with the minimum `VERSION_CREATE` scope. When the secret is absent, tag releases still
+publish to GitHub and report that Modrinth was skipped. Each enabled Modrinth release is a
+three-entry matrix, with one primary JAR and one exact Minecraft version per entry.
+
+`workflow_dispatch` is the recovery path for an existing tag. It uses the same validation,
+build, and publishing jobs; Modrinth is off by default to make retrying only the GitHub
+Release safe. Enable it explicitly only when none of the corresponding Modrinth versions
+already exists.
+
 ## Logging policy
 
 World Mirror has one operational logging API: the shared `WMLogger`. Minecraft's

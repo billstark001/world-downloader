@@ -7,6 +7,14 @@ name: build
 on: [ pull_request, push ]
 
 jobs:
+  actionlint:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: checkout repository
+        uses: actions/checkout@v4
+      - name: lint GitHub Actions workflows
+        uses: docker://rhysd/actionlint:1.7.7
+
   build:
     runs-on: ubuntu-24.04
     steps:

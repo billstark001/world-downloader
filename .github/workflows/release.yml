@@ -1,0 +1,183 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing tag to retry (for example, v0.4.1)'
+        required: true
+        type: string
+      publish_modrinth:
+        description: 'Publish the three Modrinth versions when a token is configured'
+        required: true
+        default: false
+        type: boolean
+
+concurrency:
+  group: release-${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.metadata.outputs.version }}
+      tag: ${{ steps.metadata.outputs.tag }}
+      release_name: ${{ steps.metadata.outputs.release_name }}
+      channel: ${{ steps.metadata.outputs.channel }}
+      prerelease: ${{ steps.metadata.outputs.prerelease }}
+      publish_modrinth: ${{ steps.metadata.outputs.publish_modrinth }}
+    env:
+      RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+      WANT_MODRINTH: ${{ github.event_name == 'push' || inputs.publish_modrinth }}
+      MODRINTH_TOKEN: ${{ secrets.MODRINTH_TOKEN }}
+    steps:
+      - name: Checkout release tag
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+
+      - name: Validate and derive release metadata
+        id: metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="$(sed -n 's/^mod_version=//p' gradle.properties)"
+          test "$(grep -c '^mod_version=' gradle.properties)" -eq 1
+          [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]
+          test "$RELEASE_TAG" = "v$version"
+
+          first_changelog_version="$(sed -n 's/^## \[\([^]]*\)\].*/\1/p' CHANGELOG.md | head -n 1)"
+          test "$first_changelog_version" = "$version"
+          awk '/^## \[/{section++} section == 1{print} section == 2{exit}' CHANGELOG.md \
+            | sed '$d' > release-notes.md
+          test -s release-notes.md
+
+          suffix="${version#*-}"
+          if [[ "$version" != *-* ]]; then
+            channel=release
+            prerelease=false
+          elif [[ "${suffix,,}" == *alpha* ]]; then
+            channel=alpha
+            prerelease=true
+          else
+            channel=beta
+            prerelease=true
+          fi
+
+          publish_modrinth=false
+          if [[ "$WANT_MODRINTH" == "true" && -n "$MODRINTH_TOKEN" ]]; then
+            publish_modrinth=true
+          elif [[ "$WANT_MODRINTH" == "true" ]]; then
+            echo '::notice::MODRINTH_TOKEN is not configured; skipping Modrinth publishing.'
+          fi
+
+          {
+            echo "version=$version"
+            echo "tag=$RELEASE_TAG"
+            echo "release_name=World Mirror $RELEASE_TAG"
+            echo "channel=$channel"
+            echo "prerelease=$prerelease"
+            echo "publish_modrinth=$publish_modrinth"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Validate Gradle wrapper
+        uses: gradle/actions/wrapper-validation@v4
+
+      - name: Setup JDK
+        uses: actions/setup-java@v4
+        with:
+          java-version: '25'
+          distribution: 'microsoft'
+
+      - name: Build all targets once
+        run: |
+          chmod +x ./gradlew
+          ./gradlew buildAll
+
+      - name: Collect and validate distributable JARs
+        shell: bash
+        env:
+          VERSION: ${{ steps.metadata.outputs.version }}
+        run: |
+          set -euo pipefail
+          mkdir -p build/release
+          mv release-notes.md build/release/
+          for minecraft in 1.21.11 26.1.2 26.2; do
+            jar="versions/fabric-$minecraft/build/libs/world-mirror-$VERSION+$minecraft-fabric.jar"
+            test -f "$jar"
+            cp "$jar" build/release/
+          done
+          test "$(find build/release -maxdepth 1 -name '*.jar' -type f | wc -l)" -eq 3
+          test "$(find versions -path '*/build/libs/world-mirror-*-fabric.jar' -type f | wc -l)" -eq 3
+
+      - name: Upload release bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ steps.metadata.outputs.tag }}
+          path: build/release/
+          if-no-files-found: error
+          retention-days: 7
+
+  publish-github:
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - name: Download release bundle
+        uses: actions/download-artifact@v4
+        with:
+          name: release-${{ needs.build.outputs.tag }}
+          path: build/release
+
+      - name: Create or update GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.build.outputs.tag }}
+          name: ${{ needs.build.outputs.release_name }}
+          body_path: build/release/release-notes.md
+          prerelease: ${{ needs.build.outputs.prerelease }}
+          files: build/release/*.jar
+          fail_on_unmatched_files: true
+
+  publish-modrinth:
+    needs: build
+    if: ${{ needs.build.outputs.publish_modrinth == 'true' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        minecraft:
+          - '1.21.11'
+          - '26.1.2'
+          - '26.2'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - name: Download release bundle
+        uses: actions/download-artifact@v4
+        with:
+          name: release-${{ needs.build.outputs.tag }}
+          path: build/release
+
+      - name: Publish Minecraft ${{ matrix.minecraft }} to Modrinth
+        uses: Kir-Antipov/mc-publish@v3.3
+        with:
+          modrinth-id: RjnX4gR2
+          modrinth-token: ${{ secrets.MODRINTH_TOKEN }}
+          files: build/release/world-mirror-${{ needs.build.outputs.version }}+${{ matrix.minecraft }}-fabric.jar
+          name: ${{ needs.build.outputs.release_name }} for Minecraft ${{ matrix.minecraft }}
+          version: ${{ needs.build.outputs.version }}+${{ matrix.minecraft }}-fabric
+          version-type: ${{ needs.build.outputs.channel }}
+          changelog-file: build/release/release-notes.md
+          game-versions: ${{ matrix.minecraft }}
+          game-version-filter: none
+          loaders: fabric
+          environment: client
+          dependencies: fabric-api(required)
