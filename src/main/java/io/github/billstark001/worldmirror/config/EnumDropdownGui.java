@@ -47,8 +47,7 @@ public final class EnumDropdownGui {
                 () -> Utils.getUnsafely(field, defaults),
                 value -> Utils.setUnsafely(field, config, value),
                 values,
-                DropdownMenuBuilder.TopCellElementBuilder.of(
-                        current, input -> findByLabel(values, translationKey, input), label),
+                EnumDropdownGuiApi.createTopCell(current, label),
                 DropdownMenuBuilder.CellCreatorBuilder.of(label));
         return Collections.singletonList(entry);
     }
@@ -73,4 +72,5 @@ public final class EnumDropdownGui {
         }
         return Component.literal(fallback.toString());
     }
+
 }

@@ -15,8 +15,12 @@ Run this checklist on Minecraft 1.21.11, 26.1.2, and 26.2.
    Escape or moving focus away closes it without changing the pending value.
 6. Select the already-current value and verify the list still closes. Reopen and close each field
    repeatedly to check for stale focus or an accidental selection.
-7. Verify Cancel discards edits, Done saves edits, and Reset restores defaults.
-8. Inspect `config/worldmirror.json` and confirm enum values still use uppercase names such as
+7. Use a narrow GUI scale and the longest translated labels. Verify closed labels end in one
+   ellipsis when needed, preserve room for the arrow, and never show a caret or white cursor block.
+8. Move keyboard focus across several closed fields without opening them: every arrow must remain
+   downward. Only the one field with a visible open list may show an upward arrow.
+9. Verify Cancel discards edits, Done saves edits, and Reset restores defaults.
+10. Inspect `config/worldmirror.json` and confirm enum values still use uppercase names such as
    `DOWNLOADED`, `STABLE_PERIODIC`, and `KEEP`.
 
 ## Per-world settings

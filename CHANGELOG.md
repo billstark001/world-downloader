@@ -12,6 +12,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Replaced editable enum suggestions and cycling per-world buttons with selection-only dropdown listboxes.
 - Applied translated enum labels to both closed controls and open lists across global, nested, and per-world settings.
 - Made enum lists close deterministically on selection, focus loss, outside click, and Escape; compacted the native status list styling.
+- Replaced Cloth's hidden editable top cell with a caret-free read-only renderer and ellipsis truncation for narrow translated labels; arrows now reflect actual expansion rather than focus.
 
 ## [0.4.1] — 2026-08-23
 

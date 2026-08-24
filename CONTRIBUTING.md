@@ -66,6 +66,13 @@ current-value marker and close after any selection, on outside click, on Escape,
 focus leaves the control. Opening and closing without choosing must not change the pending
 value. Native-screen lists should be no wider or taller than their content requires and
 must not imitate a second full-width form row when a compact value-aligned popup suffices.
+Selection-only controls must not retain a hidden `EditBox` or render a text caret. Closed
+labels reserve room for their dropdown indicator and use font-width ellipsis truncation
+when needed; do not add a pre-render pass or cache per-character screen coordinates.
+The indicator direction derives from the popup's actual expanded state, never the row's
+selection or keyboard-focus flag. Keep value state, focus handling, layout, truncation,
+and expansion semantics in root source; target adapters should submit only API-specific
+draw calls when that is the sole upstream difference.
 
 Changes to selection controls require updating and running
 `docs/enum-dropdown-manual-test.md` on every supported Minecraft target. Test translated
