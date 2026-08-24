@@ -19,6 +19,9 @@ public class ModMenuApiImpl implements ModMenuApi {
 
     @Override
     public ConfigScreenFactory<?> getModConfigScreenFactory() {
-        return parent -> AutoConfigClient.getConfigScreen(ModConfig.class, parent).get();
+        return parent -> {
+            EnumDropdownGui.register();
+            return AutoConfigClient.getConfigScreen(ModConfig.class, parent).get();
+        };
     }
 }

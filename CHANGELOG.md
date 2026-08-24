@@ -5,6 +5,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [0.4.2] — 2026-08-25
+
+### Changed
+
+- Replaced editable enum suggestions and cycling per-world buttons with selection-only dropdown listboxes.
+- Applied translated enum labels consistently to global, nested, and per-world settings.
+
 ## [0.4.1] — 2026-08-23
 
 ### Changed

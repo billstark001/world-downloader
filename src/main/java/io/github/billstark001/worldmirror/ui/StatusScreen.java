@@ -1,5 +1,7 @@
 package io.github.billstark001.worldmirror.ui;
 
+import com.mojang.blaze3d.platform.InputConstants;
+import io.github.billstark001.worldmirror.config.EnumDropdownGui;
 import io.github.billstark001.worldmirror.config.ModConfig;
 import io.github.billstark001.worldmirror.conflict.ConflictManager;
 import io.github.billstark001.worldmirror.core.ChunkListener;
@@ -15,10 +17,16 @@ import net.fabricmc.api.Environment;
 import net.fabricmc.loader.api.FabricLoader;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.components.Button;
+import net.minecraft.client.gui.components.events.GuiEventListener;
+import net.minecraft.client.input.KeyEvent;
+import net.minecraft.client.input.MouseButtonEvent;
 import net.minecraft.network.chat.Component;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.Locale;
+import java.util.function.Consumer;
+import java.util.function.Function;
 
 /** Native status UI; rendering and screen-installation differences live in StatusScreenApi. */
 @Environment(EnvType.CLIENT)
@@ -35,6 +43,7 @@ public class StatusScreen extends StatusScreenApi {
     private long lastSyncTime;
     private int conflictCount;
     private StatusContext statusContext;
+    private boolean dropdownOpen;
 
     private record StatusContext(
             String sourceId,
@@ -93,6 +102,25 @@ public class StatusScreen extends StatusScreenApi {
     }
 
     @Override
+    public boolean keyPressed(KeyEvent input) {
+        if (dropdownOpen && input.key() == InputConstants.KEY_ESCAPE) {
+            refresh();
+            return true;
+        }
+        return super.keyPressed(input);
+    }
+
+    @Override
+    public boolean mouseClicked(MouseButtonEvent click, boolean doubled) {
+        boolean handled = super.mouseClicked(click, doubled);
+        if (!handled && dropdownOpen) {
+            refresh();
+            return true;
+        }
+        return handled;
+    }
+
+    @Override
     protected void renderContent(Canvas graphics) {
         graphics.centered(title, width / 2, 12, 0xFFFFFFFF);
         switch (activeTab) {
@@ -128,44 +156,18 @@ public class StatusScreen extends StatusScreenApi {
         String sourceId = statusContext.sourceId();
         ModConfig.SaveLocation saveLocation = resolveSaveLocation(sourceId);
         ModConfig.ConflictStrategy strategy = resolveStrategy(sourceId);
-        addRenderableWidget(Button.builder(Component.translatable(
-                        "screen.worldmirror.status.saveLoc").append(": ").append(
-                        Component.translatable("config.worldmirror.saveLoc."
-                                + saveLocation.name().toLowerCase())),
-                button -> {
-                    ModConfig.SaveLocation[] values = ModConfig.SaveLocation.values();
-                    ModConfig.SaveLocation target =
-                            values[(saveLocation.ordinal() + 1) % values.length];
-                    if (DownloadManager.isActive()) {
-                        settingsSucceeded = false;
-                        settingsFailure = Component.translatable(
-                                "screen.worldmirror.move.failure.download_active");
-                        return;
-                    }
-                    if (DownloadManager.isExportInProgress()) {
-                        settingsSucceeded = false;
-                        settingsFailure = Component.translatable(
-                                "screen.worldmirror.move.failure.export_in_progress");
-                        return;
-                    }
-                    if (Files.isDirectory(DownloadManager.previewOutputPath(
-                            Minecraft.getInstance()))) {
-                        showScreen(new SaveLocationMoveScreen(this, target));
-                    } else {
-                        DownloadManager.setMirrorSaveLocation(sourceId, target);
-                        refresh();
-                    }
-                }).bounds(left, 116, PANEL_WIDTH, BUTTON_HEIGHT).build());
-        addRenderableWidget(Button.builder(Component.translatable(
-                        "screen.worldmirror.status.conflictStrategy").append(": ").append(
-                        Component.translatable("config.worldmirror.conflictStrategy."
-                                + strategy.name().toLowerCase())),
-                button -> {
-                    ModConfig.ConflictStrategy[] values = ModConfig.ConflictStrategy.values();
-                    MirrorMapping.getInstance().setPerWorldConflictStrategy(sourceId,
-                            values[(strategy.ordinal() + 1) % values.length].name());
+        addEnumDropdown(left, 116, "screen.worldmirror.status.saveLoc",
+                saveLocation, ModConfig.SaveLocation.values(),
+                value -> enumLabel("config.worldmirror.saveLoc", value),
+                target -> selectSaveLocation(sourceId, target));
+        addEnumDropdown(left, 140, "screen.worldmirror.status.conflictStrategy",
+                strategy, ModConfig.ConflictStrategy.values(),
+                value -> enumLabel("config.worldmirror.conflictStrategy", value),
+                target -> {
+                    MirrorMapping.getInstance().setPerWorldConflictStrategy(
+                            sourceId, target.name());
                     refresh();
-                }).bounds(left, 140, PANEL_WIDTH, BUTTON_HEIGHT).build());
+                });
         int settingWidth = (PANEL_WIDTH - 8) / 3;
         boolean canSync = canSyncWorldSettings();
         Button syncTime = addRenderableWidget(Button.builder(Component.translatable(
@@ -185,9 +187,86 @@ public class StatusScreen extends StatusScreenApi {
         syncDifficulty.active = canSync;
         addRenderableWidget(Button.builder(Component.translatable(
                         "screen.worldmirror.status.openSettings"),
-                button -> showScreen(AutoConfigClient.getConfigScreen(
-                        ModConfig.class, this).get()))
+                button -> {
+                    EnumDropdownGui.register();
+                    showScreen(AutoConfigClient.getConfigScreen(ModConfig.class, this).get());
+                })
                 .bounds(left, 188, PANEL_WIDTH, BUTTON_HEIGHT).build());
+    }
+
+    private <T extends Enum<T>> void addEnumDropdown(
+            int x, int y, String labelKey, T current, T[] values,
+            Function<T, Component> valueLabel, Consumer<T> onSelect) {
+        addRenderableWidget(Button.builder(
+                        dropdownLabel(labelKey, valueLabel.apply(current), false),
+                        button -> {
+                            if (dropdownOpen) {
+                                refresh();
+                            } else {
+                                openDropdown(button, labelKey, current, values,
+                                        valueLabel, onSelect);
+                            }
+                        })
+                .bounds(x, y, PANEL_WIDTH, BUTTON_HEIGHT).build());
+    }
+
+    private <T extends Enum<T>> void openDropdown(
+            Button opener, String labelKey, T current, T[] values,
+            Function<T, Component> valueLabel, Consumer<T> onSelect) {
+        dropdownOpen = true;
+        opener.setMessage(dropdownLabel(labelKey, valueLabel.apply(current), true));
+        for (GuiEventListener child : children()) {
+            if (child instanceof Button button && button != opener) button.active = false;
+        }
+
+        int listHeight = values.length * BUTTON_HEIGHT;
+        int listY = opener.getY() + BUTTON_HEIGHT;
+        if (listY + listHeight > height - 32) listY = opener.getY() - listHeight;
+        Button selected = null;
+        for (int index = 0; index < values.length; index++) {
+            T value = values[index];
+            Component message = value == current
+                    ? Component.literal("§e▶ ").append(valueLabel.apply(value))
+                    : Component.literal("  ").append(valueLabel.apply(value));
+            Button choice = addRenderableWidget(Button.builder(message,
+                            button -> onSelect.accept(value))
+                    .bounds(opener.getX(), listY + index * BUTTON_HEIGHT,
+                            opener.getWidth(), BUTTON_HEIGHT)
+                    .build());
+            if (value == current) selected = choice;
+        }
+        if (selected != null) setFocused(selected);
+    }
+
+    private void selectSaveLocation(String sourceId, ModConfig.SaveLocation target) {
+        if (DownloadManager.isActive()) {
+            refreshWithSettingsResult(Component.translatable(
+                    "screen.worldmirror.move.failure.download_active"), false);
+            return;
+        }
+        if (DownloadManager.isExportInProgress()) {
+            refreshWithSettingsResult(Component.translatable(
+                    "screen.worldmirror.move.failure.export_in_progress"), false);
+            return;
+        }
+        if (target == resolveSaveLocation(sourceId)) {
+            refresh();
+        } else if (Files.isDirectory(DownloadManager.previewOutputPath(Minecraft.getInstance()))) {
+            showScreen(new SaveLocationMoveScreen(this, target));
+        } else {
+            DownloadManager.setMirrorSaveLocation(sourceId, target);
+            refresh();
+        }
+    }
+
+    private static Component dropdownLabel(String labelKey, Component value, boolean open) {
+        return Component.translatable(labelKey).append(": ").append(value)
+                .append(open ? "  ▲" : "  ▼");
+    }
+
+    private static Component enumLabel(String prefix, Enum<?> value) {
+        return Component.translatable(prefix + "."
+                + value.name().toLowerCase(Locale.ROOT));
     }
 
     private void addConflictButtons(int left) {
@@ -401,6 +480,13 @@ public class StatusScreen extends StatusScreenApi {
 
     protected void refresh() {
         showScreen(new StatusClientScreen());
+    }
+
+    private void refreshWithSettingsResult(Component message, boolean succeeded) {
+        StatusScreen screen = new StatusClientScreen();
+        screen.settingsFailure = message;
+        screen.settingsSucceeded = succeeded;
+        showScreen(screen);
     }
 
     public static void open() {
