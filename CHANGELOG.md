@@ -5,6 +5,17 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [0.4.3] — 2026-08-29
+
+### Changed
+
+- Successful exports now invalidate their in-memory chunk cache by default.
+- Performance diagnostics now log complete global and current-world configuration snapshots when downloading starts.
+
+### Fixed
+
+- Selection-only global enum dropdowns now immediately mark the settings screen as edited, enabling Done without requiring an unrelated setting change.
+
 ## [0.4.2] — 2026-08-25
 
 ### Changed

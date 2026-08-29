@@ -1,6 +1,6 @@
 # World Mirror
 
-**Version:** 0.4.2 · **Minecraft:** 1.21.11, 26.1.2, 26.2 · **Loader:** Fabric
+**Version:** 0.4.3 · **Minecraft:** 1.21.11, 26.1.2, 26.2 · **Loader:** Fabric
 
 A client-side Fabric mod that mirrors the world you are playing on a multiplayer server —
 or even a singleplayer world — into a standard local save. As you explore, the mod captures
@@ -97,7 +97,7 @@ is also available from *Mod Menu → World Mirror → Settings*.
 | Maximum cached chunks | 0–12800; 0 disables the limit | 0 |
 | Maximum cache distance | 0–64 chunks; 0 disables the limit | 32 |
 | Maximum cache age | 0–14400 s; 0 disables the limit | 1800 s |
-| Invalidate cache after export | `true` / `false` | `false` |
+| Invalidate cache after export | `true` / `false` | `true` |
 | Main-thread capture scheduling ceiling | 250–5000 µs/tick | 1500 µs/tick |
 | Adaptive dirty high watermark | 32–8192 chunks | 512 chunks |
 | Adaptive high-watermark export cooldown | 1–60 s | 10 s |
@@ -266,7 +266,7 @@ Choose the World Mirror JAR that exactly matches your Minecraft version:
 
 1. Install [Fabric Loader](https://fabricmc.net/use/) 0.19.3 or newer.
 2. Install the matching [Fabric API](https://modrinth.com/mod/fabric-api).
-3. Put the matching World Mirror 0.4.2 JAR in `mods/`.
+3. Put the matching World Mirror 0.4.3 JAR in `mods/`.
 4. *(Optional)* Install [Mod Menu](https://modrinth.com/mod/modmenu) for a title-screen settings entry.
 5. *(Optional)* For the Xaero overlay, install both
    [Xaero's World Map](https://modrinth.com/mod/xaeros-world-map) 1.40.x–1.44.x and the
@@ -303,10 +303,11 @@ same mirror concurrently.
 
 If stutter returns, enable **Performance → Performance Diagnostic Logging**, reproduce it
 for at least 30 seconds, then attach `latest.log` and the World Mirror config. Lines marked
-`[perf]` report the active pipeline, cache/dirty counts, capture queue age, coalesced and
-dropped hints, main-thread capture time, export duration, slow region files, failures, and
-heap usage. Disable the switch afterward; it is designed to be low-frequency but is not
-needed during normal play.
+`[perf]` first record the complete global and current-world configuration, then report the
+active pipeline, cache/dirty counts, capture queue age, coalesced and dropped hints,
+main-thread capture time, export duration, slow region files, failures, and heap usage.
+Disable the switch afterward; it is designed to be low-frequency but is not needed during
+normal play.
 
 Distant Horizons' “slow GC” warning is selected from the JVM garbage collector name and
 does not by itself attribute a pause to World Mirror. World Mirror's `[perf]` line includes
