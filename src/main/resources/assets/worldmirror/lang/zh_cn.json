@@ -210,7 +210,7 @@
   "text.autoconfig.worldmirror.option.performance.maxPendingCaptureHints": "最大捕获提示数",
   "text.autoconfig.worldmirror.option.performance.maxPendingCaptureHints.@Tooltip": "等待主线程捕获的合并事件提示上限；区块卸载时仍会执行最终捕获。",
   "text.autoconfig.worldmirror.option.performance.diagnosticPerformanceLogging": "性能诊断日志",
-  "text.autoconfig.worldmirror.option.performance.diagnosticPerformanceLogging.@Tooltip": "每 30 秒记录捕获耗时分位数与原因、各 GC 收集器、管线与导出阶段，并报告异常缓慢的 region。平时建议关闭。",
+  "text.autoconfig.worldmirror.option.performance.diagnosticPerformanceLogging.@Tooltip": "下载开始时记录完整的全局和当前世界配置；之后每 30 秒记录捕获耗时分位数与原因、各 GC 收集器、管线与导出阶段，并报告异常缓慢的 region。平时建议关闭。",
   "text.autoconfig.worldmirror.option.performance.slowRegionMillis": "慢速 Region 阈值（毫秒）",
   "text.autoconfig.worldmirror.option.performance.slowRegionMillis.@Tooltip": "启用性能诊断时，报告超过此耗时的 region 阶段。",
 

@@ -558,6 +558,7 @@ public final class DownloadManager {
         resetDiagnosticSession();
         diagnosticSessionActive = ModConfig.get().performance.diagnosticPerformanceLogging;
         recordPerformanceTimings = diagnosticSessionActive;
+        if (diagnosticSessionActive) DownloadConfigDiagnostics.log(client);
         EntityTracker.resetObservationEpochs();
         exportCoordinator.markEntitiesDirty();
         long nowMs = System.currentTimeMillis();

@@ -210,7 +210,7 @@
   "text.autoconfig.worldmirror.option.performance.maxPendingCaptureHints": "最大キャプチャヒント数",
   "text.autoconfig.worldmirror.option.performance.maxPendingCaptureHints.@Tooltip": "メインスレッドキャプチャを待つ統合イベントヒントの上限。アンロード時には最終キャプチャを行います。",
   "text.autoconfig.worldmirror.option.performance.diagnosticPerformanceLogging": "パフォーマンス診断ログ",
-  "text.autoconfig.worldmirror.option.performance.diagnosticPerformanceLogging.@Tooltip": "30秒ごとにキャプチャ遅延の分位点と理由、GCコレクター別情報、パイプライン・エクスポート段階、遅い region を記録します。通常はオフを推奨します。",
+  "text.autoconfig.worldmirror.option.performance.diagnosticPerformanceLogging.@Tooltip": "ダウンロード開始時にグローバル設定と現在のワールド設定をすべて記録します。その後30秒ごとにキャプチャ遅延の分位点と理由、GCコレクター別情報、パイプライン・エクスポート段階、遅い region を記録します。通常はオフを推奨します。",
   "text.autoconfig.worldmirror.option.performance.slowRegionMillis": "低速 Region しきい値（ms）",
   "text.autoconfig.worldmirror.option.performance.slowRegionMillis.@Tooltip": "診断ログ有効時、この時間を超えた region ステージを報告します。",
 

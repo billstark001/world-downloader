@@ -210,7 +210,7 @@
   "text.autoconfig.worldmirror.option.performance.maxPendingCaptureHints": "最大擷取提示數",
   "text.autoconfig.worldmirror.option.performance.maxPendingCaptureHints.@Tooltip": "等待主執行緒擷取的合併事件提示上限；區塊卸載時仍會執行最終擷取。",
   "text.autoconfig.worldmirror.option.performance.diagnosticPerformanceLogging": "效能診斷日誌",
-  "text.autoconfig.worldmirror.option.performance.diagnosticPerformanceLogging.@Tooltip": "每 30 秒記錄擷取耗時分位數與原因、各 GC 收集器、管線與匯出階段，並報告異常緩慢的 region。平時建議關閉。",
+  "text.autoconfig.worldmirror.option.performance.diagnosticPerformanceLogging.@Tooltip": "下載開始時記錄完整的全域與目前世界設定；之後每 30 秒記錄擷取耗時分位數與原因、各 GC 收集器、管線與匯出階段，並報告異常緩慢的 region。平時建議關閉。",
   "text.autoconfig.worldmirror.option.performance.slowRegionMillis": "慢速 Region 閾值（毫秒）",
   "text.autoconfig.worldmirror.option.performance.slowRegionMillis.@Tooltip": "啟用效能診斷時，報告超過此耗時的 region 階段。",
 

@@ -126,5 +126,6 @@ The bridge release provides separate builds for Minecraft 1.21.11, 26.1.2, and 2
 
 Open Global Settings, enable **Performance Diagnostic Logging**, reproduce the problem for
 at least 30 seconds, then attach `latest.log` and `config/worldmirror.json` to the report.
-Disable the option afterward. The additional `[perf]` lines are designed for diagnosis and
+Disable the option afterward. Download startup records the complete global and current-world
+configuration in `[perf]` lines, followed by the periodic performance telemetry; these lines
 are not needed during normal play.

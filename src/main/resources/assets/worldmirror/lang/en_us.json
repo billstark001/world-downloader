@@ -210,7 +210,7 @@
   "text.autoconfig.worldmirror.option.performance.maxPendingCaptureHints": "Max Capture Hints",
   "text.autoconfig.worldmirror.option.performance.maxPendingCaptureHints.@Tooltip": "Bound on coalesced event hints waiting for main-thread capture. Unloading chunks still receive a final capture.",
   "text.autoconfig.worldmirror.option.performance.diagnosticPerformanceLogging": "Performance Diagnostic Logging",
-  "text.autoconfig.worldmirror.option.performance.diagnosticPerformanceLogging.@Tooltip": "Every 30 seconds, log capture latency percentiles and reasons, per-collector GC, pipeline/export stages, and slow regions. Leave off normally.",
+  "text.autoconfig.worldmirror.option.performance.diagnosticPerformanceLogging.@Tooltip": "At download start, log complete global and current-world configuration. Every 30 seconds, log capture latency percentiles and reasons, per-collector GC, pipeline/export stages, and slow regions. Leave off normally.",
   "text.autoconfig.worldmirror.option.performance.slowRegionMillis": "Slow Region Threshold (ms)",
   "text.autoconfig.worldmirror.option.performance.slowRegionMillis.@Tooltip": "With performance diagnostics enabled, report region stages slower than this threshold.",
 
