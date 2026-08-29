@@ -8,6 +8,7 @@ import net.minecraft.network.chat.Component;
 
 import java.util.Collections;
 import java.util.List;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.function.Function;
 
@@ -19,9 +20,11 @@ abstract class ReadOnlyDropdownTopCell<T>
 
     private final Function<T, Component> label;
     private final Button focusTarget;
+    private final T initialValue;
     private T value;
 
     protected ReadOnlyDropdownTopCell(T value, Function<T, Component> label) {
+        this.initialValue = value;
         this.value = value;
         this.label = label;
         this.focusTarget = Button.builder(label.apply(value), ignored -> { })
@@ -38,6 +41,11 @@ abstract class ReadOnlyDropdownTopCell<T>
 
     @Override public Component getSearchTerm() { return label.apply(value); }
     @Override public Optional<Component> getError() { return Optional.empty(); }
+
+    @Override
+    public boolean isEdited() {
+        return super.isEdited() || !Objects.equals(initialValue, value);
+    }
 
     @Override
     public List<? extends GuiEventListener> children() {

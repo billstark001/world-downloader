@@ -19,7 +19,8 @@ Run this checklist on Minecraft 1.21.11, 26.1.2, and 26.2.
    ellipsis when needed, preserve room for the arrow, and never show a caret or white cursor block.
 8. Move keyboard focus across several closed fields without opening them: every arrow must remain
    downward. Only the one field with a visible open list may show an upward arrow.
-9. Verify Cancel discards edits, Done saves edits, and Reset restores defaults.
+9. Change only one dropdown value and verify Done becomes enabled immediately. Verify Cancel
+   discards edits, Done saves edits, and Reset restores defaults.
 10. Inspect `config/worldmirror.json` and confirm enum values still use uppercase names such as
    `DOWNLOADED`, `STABLE_PERIODIC`, and `KEEP`.
 
