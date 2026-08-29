@@ -197,7 +197,7 @@ public class ModConfig implements ConfigData {
          * re-capturing the chunk if it needs to be re-exported.
          */
         @ConfigEntry.Gui.Tooltip
-        public boolean invalidateAfterExport = false;
+        public boolean invalidateAfterExport = true;
     }
 
     // ── Lifecycle behaviour ───────────────────────────────────────────────────
